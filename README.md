@@ -13,6 +13,8 @@ This MCP server enables AI assistants (like Claude) to execute code in persisten
 - **Notebook Management**: Create, edit, and manage Jupyter notebooks
 - **Real-time Execution**: Stream output as code runs
 - **Search Capabilities**: Find code across all notebooks
+- **Automatic Reconnection**: WebSocket connections retry with exponential backoff
+- **AI-Friendly Discovery**: Context-aware suggestions for next steps
 
 ### Use Cases
 
@@ -148,6 +150,63 @@ To use this server with an MCP client (like Claude Desktop), add this to your MC
 ```
 
 Replace `/path/to/jupyter-kernel-mcp` with the actual path where you cloned this repository.
+
+## Available Tools
+
+The server provides several tools for AI assistants to use:
+
+### Core Execution Tools
+
+- **`compute()`** - Smart execution with auto-detection of streaming needs
+- **`q()`** - Quick compute for simple calculations
+- **`execute()`** - Full control execution with detailed results
+- **`stream_execute()`** - Real-time streaming output with timestamps
+
+### Discovery & State Management
+
+- **`suggest_next()`** - Context-aware suggestions based on current kernel state
+- **`vars()`** - Peek at variables in memory
+- **`workspace()`** - Bird's eye view of all kernels and notebooks
+- **`kernel_state()`** - Detailed state inspection with memory usage
+
+### Notebook Operations
+
+- **`notebook()`** - Natural language notebook operations (create, add, read, etc.)
+- **`create_notebook()`** - Create new notebooks
+- **`add_to_notebook()`** - Add code to existing notebooks
+- **`search_notebooks()`** - Search across all notebooks
+
+### System Management
+
+- **`list_available_kernels()`** - See supported languages
+- **`reset()`** - Clear kernel state (use sparingly!)
+
+## New Features
+
+### Automatic Reconnection
+
+The server now includes automatic WebSocket reconnection with exponential backoff. If a connection fails, it will:
+
+1. Retry with increasing delays (1s, 2s, 4s, 8s, up to 30s)
+2. Show encouraging messages during retries
+3. Gracefully handle transient network issues
+
+### Context-Aware Suggestions
+
+The new `suggest_next()` tool provides intelligent suggestions based on your current state:
+
+```python
+# After loading a DataFrame
+>>> suggest_next()
+🔮 Based on your current state:
+
+📊 You have a DataFrame 'df' loaded (1000×5)
+You might want to:
+  • df.describe() - Get statistical summary
+  • df.info() - Check data types and memory usage
+  • df.head(10) - View first 10 rows
+  • df.isnull().sum() - Check for missing values
+```
 
 ## Troubleshooting
 

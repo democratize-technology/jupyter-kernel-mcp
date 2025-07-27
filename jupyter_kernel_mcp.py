@@ -31,9 +31,36 @@ import asyncio
 import sys
 from datetime import datetime
 
+
 # Helper function to print debug messages to stderr
 def debug_print(*args, **kwargs):
     print(*args, **kwargs, file=sys.stderr)
+
+
+# Progress indicator for kernel startup
+class KernelStartupProgress:
+    """Visual progress indicator for kernel startup"""
+
+    def __init__(self, kernel_name: str):
+        self.kernel_name = kernel_name
+        self.steps = []
+        self.current_step = 0
+        self.start_time = asyncio.get_event_loop().time()
+
+    def add_step(self, message: str, icon: str = "🔄"):
+        """Add a progress step and print it"""
+        elapsed = asyncio.get_event_loop().time() - self.start_time
+        self.steps.append((message, elapsed))
+        debug_print(f"{icon} [{elapsed:.1f}s] {self.kernel_name}: {message}")
+
+    def complete(self, success: bool = True):
+        """Mark completion"""
+        elapsed = asyncio.get_event_loop().time() - self.start_time
+        if success:
+            debug_print(f"✅ [{elapsed:.1f}s] {self.kernel_name}: Ready!")
+        else:
+            debug_print(f"❌ [{elapsed:.1f}s] {self.kernel_name}: Failed to start")
+
 
 # Create MCP server
 mcp = FastMCP("jupyter-kernel")
@@ -48,13 +75,17 @@ CONFIG = {
 }
 
 # Build Jupyter URLs from config
-JUPYTER_URL = f"{CONFIG['JUPYTER_PROTOCOL']}://{CONFIG['JUPYTER_HOST']}:{CONFIG['JUPYTER_PORT']}"
+JUPYTER_URL = (
+    f"{CONFIG['JUPYTER_PROTOCOL']}://{CONFIG['JUPYTER_HOST']}:{CONFIG['JUPYTER_PORT']}"
+)
 JUPYTER_WS_URL = f"{CONFIG['JUPYTER_WS_PROTOCOL']}://{CONFIG['JUPYTER_HOST']}:{CONFIG['JUPYTER_PORT']}"
 
 # Get Jupyter token from environment
 JUPYTER_TOKEN = os.environ.get("JUPYTER_TOKEN")
 if not JUPYTER_TOKEN:
-    debug_print("WARNING: No JUPYTER_TOKEN found in environment. Authentication will fail.")
+    debug_print(
+        "WARNING: No JUPYTER_TOKEN found in environment. Authentication will fail."
+    )
 else:
     debug_print(f"Got Jupyter token: {JUPYTER_TOKEN[:8]}...")
 
@@ -62,49 +93,26 @@ else:
 # Structure: {kernel_type: {"id": kernel_id, "session": session_id}}
 KERNEL_IDS = {}
 
+
 def _get_kernel_spec(kernel_type: str) -> dict:
     """Get kernel specification based on kernel type"""
     kernel_specs = {
         "python3": {
             "name": "python3",
             "display_name": "Python 3",
-            "language": "python"
+            "language": "python",
         },
-        "deno": {
-            "name": "deno",
-            "display_name": "Deno",
-            "language": "typescript"
-        },
+        "deno": {"name": "deno", "display_name": "Deno", "language": "typescript"},
         "julia": {
             "name": "julia-1.10",
             "display_name": "Julia 1.10",
-            "language": "julia"
+            "language": "julia",
         },
-        "r": {
-            "name": "ir",
-            "display_name": "R",
-            "language": "r"
-        },
-        "go": {
-            "name": "gophernotes",
-            "display_name": "Go",
-            "language": "go"
-        },
-        "rust": {
-            "name": "rust",
-            "display_name": "Rust",
-            "language": "rust"
-        },
-        "bash": {
-            "name": "bash",
-            "display_name": "Bash",
-            "language": "bash"
-        },
-        "ruby": {
-            "name": "ruby3",
-            "display_name": "Ruby 3",
-            "language": "ruby"
-        }
+        "r": {"name": "ir", "display_name": "R", "language": "r"},
+        "go": {"name": "gophernotes", "display_name": "Go", "language": "go"},
+        "rust": {"name": "rust", "display_name": "Rust", "language": "rust"},
+        "bash": {"name": "bash", "display_name": "Bash", "language": "bash"},
+        "ruby": {"name": "ruby3", "display_name": "Ruby 3", "language": "ruby"},
     }
 
     # Return requested kernel spec or fallback to a sensible default
@@ -113,8 +121,11 @@ def _get_kernel_spec(kernel_type: str) -> dict:
 
     # If requested kernel not found, return python3 as fallback
     # In production, you might want to query Jupyter for available kernels
-    debug_print(f"Warning: Unknown kernel type '{kernel_type}', falling back to python3")
+    debug_print(
+        f"Warning: Unknown kernel type '{kernel_type}', falling back to python3"
+    )
     return kernel_specs["python3"]
+
 
 def _get_kernel_type_from_spec(kernel_spec_name: str) -> str:
     """Map kernel spec name back to our kernel type"""
@@ -126,9 +137,10 @@ def _get_kernel_type_from_spec(kernel_spec_name: str) -> str:
         "gophernotes": "go",
         "rust": "rust",
         "bash": "bash",
-        "ruby3": "ruby"
+        "ruby3": "ruby",
     }
     return spec_to_type.get(kernel_spec_name, "python3")
+
 
 def _get_kernel_spec_name(kernel_type: str) -> str:
     """Map our kernel type to the actual kernel spec name used by Jupyter"""
@@ -144,17 +156,17 @@ def _get_kernel_spec_name(kernel_type: str) -> str:
         "rust": "rust",
         "bash": "bash",
         "ruby": "ruby3",
-        "ruby3": "ruby3"  # Direct mapping
+        "ruby3": "ruby3",  # Direct mapping
     }
     return type_to_spec.get(kernel_type, "python3")
+
 
 async def _get_available_kernels(jupyter_url: str, headers: dict) -> dict:
     """Get list of available kernels from Jupyter"""
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(
-                f"{jupyter_url}/api/kernelspecs",
-                headers=headers
+                f"{jupyter_url}/api/kernelspecs", headers=headers
             )
             response.raise_for_status()
             return response.json()
@@ -162,14 +174,18 @@ async def _get_available_kernels(jupyter_url: str, headers: dict) -> dict:
         debug_print(f"Warning: Could not fetch available kernels: {e}")
         return {"kernelspecs": {}}
 
-async def _ensure_kernel_ready(kernel_id: str, session_id: str, ws_url: str, headers: dict) -> bool:
+
+async def _ensure_kernel_ready(
+    kernel_id: str, session_id: str, ws_url: str, headers: dict
+) -> bool:
     """Ensure kernel is ready by sending kernel_info_request"""
     ws_endpoint = f"{ws_url}/api/kernels/{kernel_id}/channels"
     if JUPYTER_TOKEN:
         ws_endpoint += f"?token={JUPYTER_TOKEN}"
 
     try:
-        async with websockets.connect(ws_endpoint, subprotocols=['kernel.v5.2']) as ws:
+        ws = await _connect_with_backoff(ws_endpoint, subprotocols=["kernel.v5.2"])
+        async with ws:
             # Send kernel_info_request
             msg_id = str(uuid.uuid4())
             kernel_info_msg = {
@@ -179,12 +195,12 @@ async def _ensure_kernel_ready(kernel_id: str, session_id: str, ws_url: str, hea
                     "session": session_id,
                     "username": "mcp",
                     "version": "5.2",
-                    "date": datetime.utcnow().isoformat() + "Z"
+                    "date": datetime.utcnow().isoformat() + "Z",
                 },
                 "parent_header": {},
                 "metadata": {},
                 "content": {},
-                "channel": "shell"
+                "channel": "shell",
             }
 
             await ws.send(json.dumps(kernel_info_msg))
@@ -195,8 +211,11 @@ async def _ensure_kernel_ready(kernel_id: str, session_id: str, ws_url: str, hea
                 while (asyncio.get_event_loop().time() - start_time) < 5.0:
                     message = await asyncio.wait_for(ws.recv(), timeout=0.5)
                     msg_data = json.loads(message)
-                    if (msg_data.get("header", {}).get("msg_type") == "kernel_info_reply" and
-                        msg_data.get("parent_header", {}).get("msg_id") == msg_id):
+                    if (
+                        msg_data.get("header", {}).get("msg_type")
+                        == "kernel_info_reply"
+                        and msg_data.get("parent_header", {}).get("msg_id") == msg_id
+                    ):
                         debug_print(f"Kernel {kernel_id} is ready")
                         return True
             except asyncio.TimeoutError:
@@ -206,6 +225,48 @@ async def _ensure_kernel_ready(kernel_id: str, session_id: str, ws_url: str, hea
     except Exception as e:
         debug_print(f"Error checking kernel readiness: {e}")
         return False
+
+
+async def _connect_with_backoff(
+    ws_endpoint: str, subprotocols: list, max_retries: int = 5
+) -> websockets.WebSocketClientProtocol:
+    """
+    Connect to WebSocket with exponential backoff retry logic.
+    Maintains delightful UX with encouraging messages.
+    """
+    retry_messages = [
+        "🔄 Hmm, connection hiccup! Let me try again...",
+        "💪 Still working on it - sometimes kernels need a moment to wake up!",
+        "🎯 One more try - third time's the charm!",
+        "🚀 Persistence is key - giving it another shot!",
+        "⚡ Almost there - kernels can be sleepy sometimes!",
+    ]
+
+    base_delay = 1.0  # Start with 1 second
+    max_delay = 30.0  # Cap at 30 seconds
+
+    for attempt in range(max_retries):
+        try:
+            return await websockets.connect(ws_endpoint, subprotocols=subprotocols)
+        except Exception as e:
+            if attempt == max_retries - 1:
+                # Final attempt failed
+                raise Exception(
+                    f"🔌 Connection troubles after {max_retries} attempts. The kernel might be taking a break. Error: {str(e)}"
+                )
+
+            # Calculate delay with exponential backoff
+            delay = min(base_delay * (2**attempt), max_delay)
+
+            # Show encouraging message
+            message = retry_messages[min(attempt, len(retry_messages) - 1)]
+            debug_print(f"{message} (waiting {delay:.1f}s)")
+
+            await asyncio.sleep(delay)
+
+    # Should never reach here, but just in case
+    raise Exception("🔌 Unable to establish connection")
+
 
 async def _execute_code(code: str, kernel: str = "python3") -> dict:
     """Internal function to execute code in a Jupyter kernel"""
@@ -225,56 +286,87 @@ async def _execute_code(code: str, kernel: str = "python3") -> dict:
 
     # Check if we need to create a new kernel
     if kernel not in KERNEL_IDS:
+        # Create progress indicator
+        progress = KernelStartupProgress(kernel)
+        progress.add_step("Starting kernel creation", "🚀")
+
         async with httpx.AsyncClient() as client:
             # Check if kernel is available before attempting to create
+            progress.add_step("Checking available kernels", "🔍")
             kernels_data = await _get_available_kernels(jupyter_url, headers)
             available_kernels = list(kernels_data.get("kernelspecs", {}).keys())
 
             if kernel_spec_name not in available_kernels:
-                debug_print(f"Warning: Kernel spec '{kernel_spec_name}' not found in available kernels: {available_kernels}")
-                debug_print("Attempting to create anyway...")
+                progress.add_step(
+                    f"Kernel spec '{kernel_spec_name}' not in available list", "⚠️"
+                )
+                debug_print(f"Available kernels: {available_kernels}")
+                progress.add_step("Attempting to create anyway", "🔧")
 
             try:
                 # Create kernel with specific kernel spec
                 kernel_data = {"name": kernel_spec_name}
-                debug_print(f"Attempting to create {kernel} kernel (spec: {kernel_spec_name})...")
+                progress.add_step(
+                    f"Creating {kernel} kernel (spec: {kernel_spec_name})", "⚙️"
+                )
                 response = await client.post(
-                    f"{jupyter_url}/api/kernels",
-                    headers=headers,
-                    json=kernel_data
+                    f"{jupyter_url}/api/kernels", headers=headers, json=kernel_data
                 )
                 response.raise_for_status()
+                progress.add_step("Kernel created successfully", "✨")
             except httpx.HTTPStatusError as e:
-                debug_print(f"Failed to create {kernel} kernel (spec: {kernel_spec_name}): {e.response.status_code} {e.response.reason_phrase}")
+                progress.complete(success=False)
+                debug_print(
+                    f"Failed to create {kernel} kernel (spec: {kernel_spec_name}): {e.response.status_code} {e.response.reason_phrase}"
+                )
                 if e.response.status_code == 500:
-                    debug_print(f"Kernel spec '{kernel_spec_name}' may not be available in Jupyter.")
+                    debug_print(
+                        f"Kernel spec '{kernel_spec_name}' may not be available in Jupyter."
+                    )
                     debug_print(f"Available kernels: {available_kernels}")
                     debug_print(f"Response text: {e.response.text}")
-                raise Exception(f"Cannot create {kernel} kernel (spec: {kernel_spec_name}): {e.response.status_code} {e.response.reason_phrase}. Available kernels: {available_kernels}")
+                raise Exception(
+                    f"Cannot create {kernel} kernel (spec: {kernel_spec_name}): {e.response.status_code} {e.response.reason_phrase}. Available kernels: {available_kernels}"
+                )
             except Exception as e:
-                debug_print(f"Error creating {kernel} kernel (spec: {kernel_spec_name}): {e}")
-                raise Exception(f"Failed to create {kernel} kernel (spec: {kernel_spec_name}): {str(e)}")
+                progress.complete(success=False)
+                debug_print(
+                    f"Error creating {kernel} kernel (spec: {kernel_spec_name}): {e}"
+                )
+                raise Exception(
+                    f"Failed to create {kernel} kernel (spec: {kernel_spec_name}): {str(e)}"
+                )
 
             kernel_info = response.json()
             kernel_session = str(uuid.uuid4())
-            KERNEL_IDS[kernel] = {
-                "id": kernel_info["id"],
-                "session": kernel_session
-            }
+            KERNEL_IDS[kernel] = {"id": kernel_info["id"], "session": kernel_session}
 
-            debug_print(f"Created {kernel} kernel: {KERNEL_IDS[kernel]['id']} with session: {KERNEL_IDS[kernel]['session'][:8]}...")
+            progress.add_step(f"Kernel ID: {kernel_info['id'][:8]}...", "🆔")
 
             # Add kernel initialization check for Deno and Rust
             if kernel in ["deno", "rust"]:
-                debug_print(f"Waiting for {kernel} kernel to initialize...")
-                ready = await _ensure_kernel_ready(KERNEL_IDS[kernel]["id"], KERNEL_IDS[kernel]["session"], ws_url, headers)
+                progress.add_step(f"Initializing {kernel} runtime environment", "🔄")
+                ready = await _ensure_kernel_ready(
+                    KERNEL_IDS[kernel]["id"],
+                    KERNEL_IDS[kernel]["session"],
+                    ws_url,
+                    headers,
+                )
                 if not ready:
-                    debug_print(f"Warning: {kernel} kernel may not be fully ready")
+                    progress.add_step("Kernel may not be fully ready", "⚠️")
                 # Give it a bit more time for runtime initialization
                 if kernel == "rust":
-                    await asyncio.sleep(2.0)  # Rust needs more time for compilation environment
+                    progress.add_step(
+                        "Waiting for Rust compilation environment (2s)", "⏳"
+                    )
+                    await asyncio.sleep(
+                        2.0
+                    )  # Rust needs more time for compilation environment
                 else:
+                    progress.add_step("Waiting for runtime initialization (1s)", "⏳")
                     await asyncio.sleep(1.0)
+
+            progress.complete(success=True)
     else:
         debug_print(f"Using existing {kernel} kernel: {KERNEL_IDS[kernel]['id']}")
 
@@ -283,10 +375,12 @@ async def _execute_code(code: str, kernel: str = "python3") -> dict:
             async with httpx.AsyncClient() as client:
                 response = await client.get(
                     f"{jupyter_url}/api/kernels/{KERNEL_IDS[kernel]['id']}",
-                    headers=headers
+                    headers=headers,
                 )
                 if response.status_code == 404:
-                    debug_print(f"Kernel {KERNEL_IDS[kernel]['id']} no longer exists, removing from cache")
+                    debug_print(
+                        f"Kernel {KERNEL_IDS[kernel]['id']} no longer exists, removing from cache"
+                    )
                     del KERNEL_IDS[kernel]
                     # Recursively call to create a new kernel
                     return await _execute_code(code, kernel)
@@ -303,8 +397,8 @@ async def _execute_code(code: str, kernel: str = "python3") -> dict:
     if JUPYTER_TOKEN:
         ws_endpoint += f"?token={JUPYTER_TOKEN}"
 
-
-    async with websockets.connect(ws_endpoint, subprotocols=['kernel.v5.2']) as websocket:
+    websocket = await _connect_with_backoff(ws_endpoint, subprotocols=["kernel.v5.2"])
+    async with websocket:
         # Create execute_request message
         msg_id = str(uuid.uuid4())
         execute_msg = {
@@ -314,7 +408,7 @@ async def _execute_code(code: str, kernel: str = "python3") -> dict:
                 "session": KERNEL_IDS[kernel]["session"],
                 "username": "mcp",
                 "version": "5.2",
-                "date": datetime.utcnow().isoformat() + "Z"
+                "date": datetime.utcnow().isoformat() + "Z",
             },
             "parent_header": {},
             "metadata": {},
@@ -323,9 +417,9 @@ async def _execute_code(code: str, kernel: str = "python3") -> dict:
                 "silent": False,
                 "store_history": True,
                 "user_expressions": {},
-                "allow_stdin": False
+                "allow_stdin": False,
             },
-            "channel": "shell"
+            "channel": "shell",
         }
 
         # Send the execute request
@@ -367,30 +461,47 @@ async def _execute_code(code: str, kernel: str = "python3") -> dict:
                     if exec_state == "idle" and reply_received:
                         # For Rust, wait a bit more to catch additional stream messages
                         if kernel == "rust":
-                            debug_print("  Rust idle detected, waiting for additional messages...")
+                            debug_print(
+                                "  Rust idle detected, waiting for additional messages..."
+                            )
                             # Continue collecting messages for a short time
                             idle_time = asyncio.get_event_loop().time()
                             while (asyncio.get_event_loop().time() - idle_time) < 1.0:
                                 try:
-                                    additional_msg = await asyncio.wait_for(websocket.recv(), timeout=0.1)
+                                    additional_msg = await asyncio.wait_for(
+                                        websocket.recv(), timeout=0.1
+                                    )
                                     additional_data = json.loads(additional_msg)
-                                    additional_type = additional_data.get("header", {}).get("msg_type", "")
-                                    additional_parent = additional_data.get("parent_header", {}).get("msg_id", "")
+                                    additional_type = additional_data.get(
+                                        "header", {}
+                                    ).get("msg_type", "")
+                                    additional_parent = additional_data.get(
+                                        "parent_header", {}
+                                    ).get("msg_id", "")
 
-                                    debug_print(f"  Additional message: {additional_type} (parent: {additional_parent})")
+                                    debug_print(
+                                        f"  Additional message: {additional_type} (parent: {additional_parent})"
+                                    )
 
                                     # Process additional stream messages
-                                    if additional_parent == msg_id and additional_type == "stream":
+                                    if (
+                                        additional_parent == msg_id
+                                        and additional_type == "stream"
+                                    ):
                                         content = additional_data.get("content", {})
                                         text = content.get("text", "")
                                         if text:
                                             output_text.append(text)
-                                            debug_print(f"    Additional stream output: {text.strip()}")
+                                            debug_print(
+                                                f"    Additional stream output: {text.strip()}"
+                                            )
                                 except asyncio.TimeoutError:
                                     continue
                                 except Exception:
                                     break
-                            debug_print("  Finished collecting additional Rust messages")
+                            debug_print(
+                                "  Finished collecting additional Rust messages"
+                            )
                         execution_state_idle = True
 
                 # Only process our messages for actual content
@@ -414,7 +525,9 @@ async def _execute_code(code: str, kernel: str = "python3") -> dict:
                         data = content.get("data", {})
                         if "text/plain" in data:
                             output_text.append(data["text/plain"])
-                            debug_print(f"  Execute result: {data['text/plain'].strip()}")
+                            debug_print(
+                                f"  Execute result: {data['text/plain'].strip()}"
+                            )
 
                     elif msg_type == "error":
                         content = msg_data.get("content", {})
@@ -424,7 +537,9 @@ async def _execute_code(code: str, kernel: str = "python3") -> dict:
                         debug_print(f"  Error: {error_text}")
 
                     elif msg_type == "execute_reply":
-                        debug_print(f"  Got execute_reply, status: {msg_data.get('content', {}).get('status', 'unknown')}")
+                        debug_print(
+                            f"  Got execute_reply, status: {msg_data.get('content', {}).get('status', 'unknown')}"
+                        )
                         reply_received = True
                         # For Python kernels, this might be enough
                         # Other kernels may need to wait for explicit idle state
@@ -437,23 +552,18 @@ async def _execute_code(code: str, kernel: str = "python3") -> dict:
 
     # Return error if we got one
     if error_text:
-        return {
-            "output": error_text,
-            "error": True
-        }
+        return {"output": error_text, "error": True}
 
     # Otherwise return normal output
     output = "".join(output_text)
-    return {
-        "output": output,
-        "error": False
-    }
+    return {"output": output, "error": False}
+
 
 @mcp.tool()
 async def compute(code: str, kernel: str = "python3", mode: str = "auto") -> dict:
     """
     Your computational thinking companion - just write code naturally.
-    
+
     This intelligently handles execution, streaming when beneficial, and provides
     rich feedback about your computation.
 
@@ -510,26 +620,37 @@ async def compute(code: str, kernel: str = "python3", mode: str = "auto") -> dic
         "sh": "bash",
         "shell": "bash",
         "ruby": "ruby",
-        "rb": "ruby"
+        "rb": "ruby",
     }
-    
+
     # Normalize kernel name
     actual_kernel = kernel_map.get(kernel, kernel)
-    
+
     # Auto-detect if streaming would be beneficial
     should_stream = mode == "stream"
     if mode == "auto":
         streaming_patterns = [
-            "import time", "time.sleep", 
-            "for ", "while ",
-            "tqdm", "progress", "Progress",
-            "print(", "console.log(",
-            "epoch", "iteration", "step",
-            "train", "fit", "model.",
-            "download", "fetch", "load_data"
+            "import time",
+            "time.sleep",
+            "for ",
+            "while ",
+            "tqdm",
+            "progress",
+            "Progress",
+            "print(",
+            "console.log(",
+            "epoch",
+            "iteration",
+            "step",
+            "train",
+            "fit",
+            "model.",
+            "download",
+            "fetch",
+            "load_data",
         ]
         should_stream = any(pattern in code for pattern in streaming_patterns)
-    
+
     # Execute with appropriate method
     if should_stream:
         # Use the internal streaming execution logic directly
@@ -544,101 +665,116 @@ async def compute(code: str, kernel: str = "python3", mode: str = "auto") -> dic
                 "error": result.get("error", False),
                 "streamed": False,
                 "kernel": actual_kernel,
-                "note": "Auto-streaming detected but using regular execution for compatibility"
+                "note": "Auto-streaming detected but using regular execution for compatibility",
             }
-            
+
             # Add helpful suggestions on error (streaming path)
             if result.get("error"):
                 output = result.get("output", "").strip()
                 error_msg = output.lower()
                 import re
-                
+
                 if "nameerror" in error_msg:
                     # Match patterns like: NameError: name 'xyz' is not defined
                     match = re.search(r"name ['\"](\w+)['\"]", output)
                     var_name = match.group(1) if match else "variable"
-                    enhanced_result["suggestion"] = f"💡 '{var_name}' is not defined. Did you run previous cells?"
+                    enhanced_result["suggestion"] = (
+                        f"💡 '{var_name}' is not defined. Did you run previous cells?"
+                    )
                 elif "modulenotfounderror" in error_msg:
                     # Match patterns like: No module named 'xyz'
                     match = re.search(r"module named ['\"](\S+)['\"]", output)
                     module = match.group(1) if match else "module"
                     enhanced_result["suggestion"] = f"💡 Try: !pip install {module}"
                 elif "syntaxerror" in error_msg:
-                    enhanced_result["suggestion"] = "💡 Check for missing colons, parentheses, or indentation"
-            
+                    enhanced_result["suggestion"] = (
+                        "💡 Check for missing colons, parentheses, or indentation"
+                    )
+
             return enhanced_result
         except Exception as e:
             return {
                 "output": f"❌ Error during execution: {str(e)}",
                 "error": True,
-                "kernel": actual_kernel
+                "kernel": actual_kernel,
             }
-    
+
     # Use regular execute
     result = await _execute_code(code, actual_kernel)
-    
+
     # Enhance output with helpful context
     output = result.get("output", "").strip()
-    
+
     # Add execution metadata
     enhanced_result = {
         "output": output if output else "✓ Executed successfully (no output)",
         "error": result.get("error", False),
         "kernel": actual_kernel,
-        "streamed": False
+        "streamed": False,
     }
-    
+
     # Add helpful suggestions on error
     if result.get("error"):
         error_msg = output.lower()
         import re
-        
+
         if "nameerror" in error_msg:
             # Match patterns like: NameError: name 'xyz' is not defined
             match = re.search(r"name ['\"](\w+)['\"]", output)
             var_name = match.group(1) if match else "variable"
-            enhanced_result["suggestion"] = f"💡 '{var_name}' is not defined. Did you run previous cells?"
+            enhanced_result["suggestion"] = (
+                f"💡 '{var_name}' is not defined. Did you run previous cells?"
+            )
         elif "modulenotfounderror" in error_msg:
             # Match patterns like: No module named 'xyz'
             match = re.search(r"module named ['\"](\S+)['\"]", output)
             module = match.group(1) if match else "module"
             enhanced_result["suggestion"] = f"💡 Try: !pip install {module}"
         elif "syntaxerror" in error_msg:
-            enhanced_result["suggestion"] = "💡 Check for missing colons, parentheses, or indentation"
-    
+            enhanced_result["suggestion"] = (
+                "💡 Check for missing colons, parentheses, or indentation"
+            )
+
     return enhanced_result
+
 
 @mcp.tool()
 async def q(code: str, kernel: str = "python3") -> str:
     """
     Quick compute - for when you just need a fast answer.
-    
+
     Super lightweight, returns just the output. Perfect for calculations,
     quick checks, and one-liners.
-    
+
     Examples:
         >>> q("2 + 2")
         "4"
-        
+
         >>> q("import sys; sys.version")
         "3.11.5 | packaged by conda-forge ..."
-        
+
         >>> q("[i**2 for i in range(5)]")
         "[0, 1, 4, 9, 16]"
     """
     # Map friendly kernel names
     kernel_map = {
-        "python": "python3", "py": "python3",
-        "julia": "julia", "jl": "julia",
-        "r": "r", "R": "r",
-        "typescript": "deno", "ts": "deno", "js": "deno"
+        "python": "python3",
+        "py": "python3",
+        "julia": "julia",
+        "jl": "julia",
+        "r": "r",
+        "R": "r",
+        "typescript": "deno",
+        "ts": "deno",
+        "js": "deno",
     }
     actual_kernel = kernel_map.get(kernel, kernel)
-    
+
     # Use direct execution
     result = await _execute_code(code, actual_kernel)
     output = result.get("output", "").strip()
     return output if output else "✓ Executed (no output)"
+
 
 @mcp.tool()
 async def execute(code: str, kernel: str = "python3") -> dict:
@@ -717,6 +853,7 @@ async def execute(code: str, kernel: str = "python3") -> dict:
     """
     return await _execute_code(code, kernel)
 
+
 @mcp.tool()
 async def list_available_kernels() -> dict:
     """
@@ -771,7 +908,7 @@ async def list_available_kernels() -> dict:
         kernel_info = {
             "name": name,
             "display_name": spec.get("spec", {}).get("display_name", name),
-            "language": spec.get("spec", {}).get("language", "unknown")
+            "language": spec.get("spec", {}).get("language", "unknown"),
         }
         available_kernels.append(kernel_info)
 
@@ -779,23 +916,24 @@ async def list_available_kernels() -> dict:
 
     return {
         "available_kernels": available_kernels,
-        "total_count": len(available_kernels)
+        "total_count": len(available_kernels),
     }
+
 
 @mcp.tool()
 async def vars(kernel: str = "python3", detailed: bool = False) -> dict:
     """
     Peek into your kernel's memory - see what variables are defined.
-    
+
     Like checking your pockets to see what you're carrying around!
-    
+
     Args:
         kernel: Which kernel to inspect (default: python3)
         detailed: Show more info about each variable (sizes, types, etc.)
-        
+
     Returns:
         A friendly summary of your workspace state
-        
+
     Examples:
         >>> vars()
         🧠 Python kernel state:
@@ -803,10 +941,10 @@ async def vars(kernel: str = "python3", detailed: bool = False) -> dict:
         🔢 x: int = 42
         📝 names: list[50]
         🎯 model: RandomForestClassifier
-        
+
         >>> vars(detailed=True)
         [More detailed type and memory information]
-        
+
     Perfect for:
         - "What was that variable called again?"
         - "Is my data still loaded?"
@@ -814,21 +952,26 @@ async def vars(kernel: str = "python3", detailed: bool = False) -> dict:
     """
     # Map friendly kernel names
     kernel_map = {
-        "python": "python3", "py": "python3",
-        "julia": "julia", "jl": "julia",
-        "r": "r", "R": "r",
-        "typescript": "deno", "ts": "deno", "js": "deno"
+        "python": "python3",
+        "py": "python3",
+        "julia": "julia",
+        "jl": "julia",
+        "r": "r",
+        "R": "r",
+        "typescript": "deno",
+        "ts": "deno",
+        "js": "deno",
     }
     actual_kernel = kernel_map.get(kernel, kernel)
-    
+
     # Check if kernel exists
     if actual_kernel not in KERNEL_IDS:
         return {
             "message": f"🔍 No {actual_kernel} kernel running. Start one with: compute('x = 1', kernel='{actual_kernel}')",
             "kernel": actual_kernel,
-            "active": False
+            "active": False,
         }
-    
+
     # Language-specific variable inspection code
     if actual_kernel == "python3":
         inspect_code = """
@@ -916,81 +1059,82 @@ end
 """
     else:
         inspect_code = "echo 'Variable inspection not yet implemented for this kernel'"
-    
+
     # Execute the inspection code
     result = await _execute_code(inspect_code, actual_kernel)
-    
+
     if result.get("error"):
         return {
             "message": f"❌ Error inspecting {actual_kernel} kernel: {result['output']}",
             "kernel": actual_kernel,
-            "error": True
+            "error": True,
         }
-    
+
     # Format the output nicely
     output = result.get("output", "").strip()
-    
+
     if output == "No variables defined yet":
         return {
             "message": f"🧠 {actual_kernel} kernel is running but no variables defined yet",
             "kernel": actual_kernel,
-            "variables": []
+            "variables": [],
         }
-    
+
     # Parse and format variables with emojis
     formatted_vars = [f"🧠 {actual_kernel} kernel state:"]
-    for line in output.split('\n'):
+    for line in output.split("\n"):
         if line.strip():
-            if 'DataFrame' in line or 'data.frame' in line:
+            if "DataFrame" in line or "data.frame" in line:
                 formatted_vars.append(f"📊 {line}")
-            elif 'array' in line.lower() or 'matrix' in line.lower():
+            elif "array" in line.lower() or "matrix" in line.lower():
                 formatted_vars.append(f"🔢 {line}")
-            elif 'list' in line or 'List' in line or 'vector' in line:
+            elif "list" in line or "List" in line or "vector" in line:
                 formatted_vars.append(f"📝 {line}")
-            elif 'model' in line.lower() or 'classifier' in line.lower():
+            elif "model" in line.lower() or "classifier" in line.lower():
                 formatted_vars.append(f"🎯 {line}")
-            elif 'dict' in line.lower() or 'map' in line.lower():
+            elif "dict" in line.lower() or "map" in line.lower():
                 formatted_vars.append(f"📚 {line}")
-            elif ': str ' in line or ': String' in line:
+            elif ": str " in line or ": String" in line:
                 formatted_vars.append(f"💬 {line}")
-            elif any(t in line for t in ['int', 'float', 'number', 'Number']):
+            elif any(t in line for t in ["int", "float", "number", "Number"]):
                 formatted_vars.append(f"🔢 {line}")
             else:
                 formatted_vars.append(f"📦 {line}")
-    
+
     return {
         "message": "\n".join(formatted_vars),
         "kernel": actual_kernel,
-        "raw_output": output
+        "raw_output": output,
     }
+
 
 @mcp.tool()
 async def workspace() -> dict:
     """
     Get a bird's eye view of your entire computational workspace.
-    
+
     Shows all active kernels, notebooks, and recent activity.
-    
+
     Returns:
         A comprehensive workspace summary
-        
+
     Example:
         >>> workspace()
         🏠 Jupyter Workspace Status:
-        
+
         🧠 Active Kernels:
         • python3: 5 variables defined
         • julia: 2 variables defined
-        
+
         📚 Notebooks (3):
         • analysis.ipynb (15 cells)
         • experiments.ipynb (23 cells)
         • scratch.ipynb (5 cells)
-        
+
         💡 Tip: Use vars('python3') to see variables in a specific kernel
     """
     workspace_info = ["🏠 Jupyter Workspace Status:\n"]
-    
+
     # Check active kernels
     if KERNEL_IDS:
         workspace_info.append("🧠 Active Kernels:")
@@ -1012,49 +1156,59 @@ print(len(vars_info))
 """
                 else:
                     # For other kernels, just check if kernel is responsive
-                    inspect_code = "println(length(names(Main)))" if kernel_name == "julia" else "length(ls())"
-                
+                    inspect_code = (
+                        "println(length(names(Main)))"
+                        if kernel_name == "julia"
+                        else "length(ls())"
+                    )
+
                 result = await _execute_code(inspect_code, kernel_name)
                 if not result.get("error"):
                     output_clean = result.get("output", "0").strip()
                     var_count = int(output_clean) if output_clean.isdigit() else 0
                     if var_count > 0:
-                        workspace_info.append(f"  • {kernel_name}: {var_count} variables defined")
+                        workspace_info.append(
+                            f"  • {kernel_name}: {var_count} variables defined"
+                        )
                     else:
-                        workspace_info.append(f"  • {kernel_name}: running (no variables)")
+                        workspace_info.append(
+                            f"  • {kernel_name}: running (no variables)"
+                        )
                 else:
                     workspace_info.append(f"  • {kernel_name}: active")
             except Exception:
                 workspace_info.append(f"  • {kernel_name}: active")
     else:
         workspace_info.append("🧠 No active kernels")
-    
+
     # List notebooks
     try:
         import os
-        notebook_files = [f for f in os.listdir('.') if f.endswith('.ipynb')]
+
+        notebook_files = [f for f in os.listdir(".") if f.endswith(".ipynb")]
         notebooks = notebook_files
-        
+
         if notebooks:
             workspace_info.append(f"\n📚 Notebooks ({len(notebooks)}):")
             for nb in notebooks[:5]:  # Show first 5
                 try:
                     # Read notebook file directly to get cell count
                     import json
-                    with open(nb, 'r') as f:
+
+                    with open(nb, "r") as f:
                         nb_data = json.load(f)
-                    cell_count = len(nb_data.get('cells', []))
+                    cell_count = len(nb_data.get("cells", []))
                     workspace_info.append(f"  • {nb} ({cell_count} cells)")
                 except Exception:
                     workspace_info.append(f"  • {nb}")
-            
+
             if len(notebooks) > 5:
                 workspace_info.append(f"  ... and {len(notebooks) - 5} more")
         else:
             workspace_info.append("\n📚 No notebooks yet")
     except Exception:
         workspace_info.append("\n📚 Could not list notebooks")
-    
+
     # Add helpful tips
     workspace_info.append("\n💡 Tips:")
     if not KERNEL_IDS:
@@ -1062,41 +1216,664 @@ print(len(vars_info))
     else:
         workspace_info.append("  • Check variables: vars('python3')")
     workspace_info.append("  • Create notebook: notebook('create', 'my_analysis')")
-    
+
     return {
         "message": "\n".join(workspace_info),
         "kernels": list(KERNEL_IDS.keys()),
-        "kernel_count": len(KERNEL_IDS)
+        "kernel_count": len(KERNEL_IDS),
     }
+
+
+@mcp.tool()
+async def kernel_state(show_all: bool = False) -> dict:
+    """
+    Get detailed state information across all active kernels with visual clarity.
+
+    This solves the "state opacity" problem - see exactly what's loaded in each kernel
+    at a glance, with memory usage estimates and helpful categorization.
+
+    Args:
+        show_all: Show all variables including internals (default: False)
+
+    Returns:
+        Comprehensive state overview with memory estimates
+
+    Example:
+        >>> kernel_state()
+        🎯 Kernel State Overview
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+        📊 Python3 Kernel (43.2 MB used)
+        ├─ DataFrames (2):
+        │  • sales_df: DataFrame (10000×25) ~38.1 MB
+        │  • customers: DataFrame (500×12) ~2.3 MB
+        ├─ Models (1):
+        │  • rf_model: RandomForestClassifier ~1.8 MB
+        ├─ Arrays (3):
+        │  • X_train: ndarray (8000×25) ~610 KB
+        │  • y_train: ndarray (8000,) ~31 KB
+        │  • predictions: ndarray (2000,) ~8 KB
+        └─ Others (5):
+           • config: dict[12] ~2 KB
+           • api_key: str (hidden)
+           • results: dict[3] ~512 B
+
+        🔬 Julia Kernel (12.7 MB used)
+        ├─ Arrays (2):
+        │  • data_matrix: Matrix{Float64} (1000×1000) ~7.6 MB
+        │  • coefficients: Vector{Float64} (1000,) ~7.8 KB
+        └─ Functions (1):
+           • optimize_model: Function
+
+        💡 Tips:
+        • Total memory across kernels: 55.9 MB
+        • Largest object: sales_df (38.1 MB)
+        • Use vars('kernel') for simple variable list
+    """
+    if not KERNEL_IDS:
+        return {
+            "message": "🔍 No active kernels. Start with: compute('x = 42')",
+            "total_memory": "0 MB",
+            "kernel_states": {},
+        }
+
+    state_info = ["🎯 Kernel State Overview", "━" * 42, ""]
+    kernel_states = {}
+    total_memory = 0
+
+    for kernel_name in sorted(KERNEL_IDS.keys()):
+        # Language-specific inspection code with memory estimation
+        if kernel_name == "python3":
+            inspect_code = """
+import sys
+import types
+import numpy as np
+import pandas as pd
+
+def get_size_mb(obj):
+    try:
+        # For DataFrames
+        if hasattr(obj, 'memory_usage'):
+            return obj.memory_usage(deep=True).sum() / 1024 / 1024
+        # For numpy arrays
+        elif hasattr(obj, 'nbytes'):
+            return obj.nbytes / 1024 / 1024
+        # For general objects
+        else:
+            return sys.getsizeof(obj) / 1024 / 1024
+    except:
+        return 0
+
+# Categorize variables
+dataframes = []
+models = []
+arrays = []
+functions = []
+others = []
+total_size = 0
+
+for name, obj in list(globals().items()):
+    if name.startswith('_') or name in ['In', 'Out', 'exit', 'quit', 'get_ipython', 'get_size_mb', 
+                                         'np', 'pd', 'sys', 'types', 'dataframes', 'models', 
+                                         'arrays', 'functions', 'others', 'total_size']:
+        continue
+    
+    if isinstance(obj, types.ModuleType) or isinstance(obj, types.BuiltinFunctionType):
+        continue
+    
+    size_mb = get_size_mb(obj)
+    total_size += size_mb
+    
+    # Categorize by type
+    type_name = type(obj).__name__
+    
+    if 'DataFrame' in type_name:
+        shape = str(obj.shape)
+        dataframes.append((name, type_name, shape, size_mb))
+    elif any(model in type_name.lower() for model in ['model', 'classifier', 'regressor', 'estimator']):
+        models.append((name, type_name, size_mb))
+    elif 'ndarray' in type_name or 'array' in type_name.lower():
+        shape = str(obj.shape) if hasattr(obj, 'shape') else f"[{len(obj)}]"
+        arrays.append((name, type_name, shape, size_mb))
+    elif callable(obj) and not isinstance(obj, type):
+        functions.append((name, type_name))
+    else:
+        # Format value for display
+        if isinstance(obj, str) and ('key' in name.lower() or 'token' in name.lower() or 'secret' in name.lower()):
+            value_str = "(hidden)"
+        elif isinstance(obj, (int, float, bool)):
+            value_str = str(obj)
+        elif isinstance(obj, str):
+            value_str = repr(obj[:30] + '...' if len(obj) > 30 else obj)
+        elif hasattr(obj, '__len__'):
+            value_str = f"[{len(obj)}]"
+        else:
+            value_str = ""
+        others.append((name, type_name, value_str, size_mb))
+
+# Output results as JSON for parsing
+import json
+print(json.dumps({
+    'total_mb': round(total_size, 1),
+    'dataframes': dataframes,
+    'models': models,
+    'arrays': arrays,
+    'functions': functions,
+    'others': others
+}))
+"""
+        elif kernel_name == "r":
+            inspect_code = """
+library(jsonlite)
+
+get_size_mb <- function(obj) {
+  tryCatch({
+    object.size(obj) / 1024 / 1024
+  }, error = function(e) { 0 })
+}
+
+vars <- ls(envir = .GlobalEnv)
+dataframes <- list()
+arrays <- list()
+functions <- list()
+others <- list()
+total_size <- 0
+
+for (var in vars) {
+  obj <- get(var)
+  size_mb <- as.numeric(get_size_mb(obj))
+  total_size <- total_size + size_mb
+  
+  if (is.data.frame(obj)) {
+    dataframes[[length(dataframes) + 1]] <- list(var, "data.frame", 
+                                                  paste0("(", nrow(obj), "×", ncol(obj), ")"), 
+                                                  round(size_mb, 1))
+  } else if (is.matrix(obj) || is.array(obj)) {
+    arrays[[length(arrays) + 1]] <- list(var, class(obj)[1], 
+                                         paste0("(", paste(dim(obj), collapse="×"), ")"),
+                                         round(size_mb, 1))
+  } else if (is.function(obj)) {
+    functions[[length(functions) + 1]] <- list(var, "function")
+  } else {
+    val_str <- if(is.numeric(obj) && length(obj) == 1) as.character(obj) else ""
+    others[[length(others) + 1]] <- list(var, class(obj)[1], val_str, round(size_mb, 1))
+  }
+}
+
+cat(toJSON(list(
+  total_mb = round(total_size, 1),
+  dataframes = dataframes,
+  arrays = arrays,
+  functions = functions,
+  others = others
+), auto_unbox = TRUE))
+"""
+        elif kernel_name == "julia":
+            inspect_code = """
+using JSON
+
+function get_size_mb(obj)
+    try
+        sizeof(obj) / 1024 / 1024
+    catch
+        0.0
+    end
+end
+
+vars = names(Main)
+user_vars = filter(v -> !startswith(string(v), "#") && v ∉ [:Base, :Core, :Main, :ans, :JSON, :get_size_mb], vars)
+
+dataframes = []
+arrays = []
+functions = []
+others = []
+total_size = 0.0
+
+for var in user_vars
+    obj = getfield(Main, var)
+    size_mb = get_size_mb(obj)
+    total_size += size_mb
+    
+    t = typeof(obj)
+    type_str = string(t)
+    
+    if t <: AbstractArray
+        shape_str = string(size(obj))
+        push!(arrays, [string(var), type_str, shape_str, round(size_mb, digits=1)])
+    elseif t <: Function
+        push!(functions, [string(var), "Function"])
+    else
+        val_str = t <: Number ? string(obj) : ""
+        push!(others, [string(var), type_str, val_str, round(size_mb, digits=1)])
+    end
+end
+
+result = Dict(
+    "total_mb" => round(total_size, digits=1),
+    "dataframes" => dataframes,
+    "arrays" => arrays,
+    "functions" => functions,
+    "others" => others
+)
+
+print(JSON.json(result))
+"""
+        else:
+            # Basic inspection for other kernels
+            inspect_code = 'echo \'{"total_mb": 0, "dataframes": [], "models": [], "arrays": [], "functions": [], "others": []}\''
+
+        # Execute inspection
+        result = await _execute_code(inspect_code, kernel_name)
+
+        if result.get("error"):
+            state_info.append(f"❌ {kernel_name} kernel: Error getting state")
+            continue
+
+        try:
+            import json
+
+            state_data = json.loads(result["output"].strip())
+            total_mb = state_data.get("total_mb", 0)
+            total_memory += total_mb
+
+            # Format kernel section
+            state_info.append(f"📊 {kernel_name.title()} Kernel ({total_mb} MB used)")
+
+            # Store state for return value
+            kernel_states[kernel_name] = {"memory_mb": total_mb, "categories": {}}
+
+            # Add categorized variables
+            categories = [
+                ("DataFrames", state_data.get("dataframes", []), "📊"),
+                ("Models", state_data.get("models", []), "🎯"),
+                ("Arrays", state_data.get("arrays", []), "🔢"),
+                ("Functions", state_data.get("functions", []), "🔧"),
+                ("Others", state_data.get("others", []), "📦"),
+            ]
+
+            for cat_name, items, icon in categories:
+                if items:
+                    kernel_states[kernel_name]["categories"][cat_name.lower()] = len(
+                        items
+                    )
+                    state_info.append(f"├─ {cat_name} ({len(items)}):")
+
+                    # Show top items by size
+                    if cat_name in ["DataFrames", "Models", "Arrays", "Others"]:
+                        # Sort by size (assuming size is last element)
+                        sorted_items = sorted(
+                            items,
+                            key=lambda x: x[-1] if len(x) > 2 else 0,
+                            reverse=True,
+                        )
+                        for i, item in enumerate(sorted_items[:5]):
+                            is_last = (i == len(items) - 1) or (i == 4)
+                            prefix = "└─" if is_last else "├─"
+
+                            if len(item) >= 4:  # Has size
+                                name, type_str, extra, size = item[:4]
+                                size_str = (
+                                    f"~{size} MB"
+                                    if size > 0.1
+                                    else f"~{size * 1024:.0f} KB"
+                                )
+                                state_info.append(
+                                    f"│  {prefix} {name}: {type_str} {extra} {size_str}"
+                                )
+                            elif len(item) >= 3:  # Has extra info but no size
+                                name, type_str, extra = item[:3]
+                                state_info.append(
+                                    f"│  {prefix} {name}: {type_str} {extra}"
+                                )
+                            else:  # Just name and type
+                                name, type_str = item[:2]
+                                state_info.append(f"│  {prefix} {name}: {type_str}")
+
+                        if len(items) > 5:
+                            state_info.append(f"│  └─ ... and {len(items) - 5} more")
+                    else:
+                        # Functions - just list names
+                        for i, item in enumerate(items[:3]):
+                            name = item[0]
+                            is_last = (i == len(items) - 1) or (i == 2)
+                            prefix = "└─" if is_last else "├─"
+                            state_info.append(f"│  {prefix} {name}: Function")
+                        if len(items) > 3:
+                            state_info.append(f"│  └─ ... and {len(items) - 3} more")
+
+            state_info.append("")  # Empty line between kernels
+
+        except Exception:
+            state_info.append(f"⚠️  {kernel_name} kernel: Could not parse state")
+            state_info.append("")
+
+    # Add summary tips
+    state_info.append("💡 Summary:")
+    state_info.append(f"  • Total memory across kernels: {total_memory:.1f} MB")
+
+    # Find largest objects across all kernels
+    for kernel, state in kernel_states.items():
+        if state.get("memory_mb", 0) > 10:
+            state_info.append(
+                f"  • {kernel} using significant memory: {state['memory_mb']} MB"
+            )
+
+    state_info.append("  • Use kernel_state(show_all=True) to see internal variables")
+    state_info.append("  • Use vars('kernel') for a simple variable list")
+
+    return {
+        "message": "\n".join(state_info),
+        "total_memory_mb": round(total_memory, 1),
+        "kernel_states": kernel_states,
+    }
+
+
+@mcp.tool()
+async def suggest_next(kernel: str = "python3") -> dict:
+    """
+    When you're wondering "what's next?" - get AI-friendly suggestions based on your current context.
+
+    This tool analyzes your kernel state and suggests relevant next steps, making discovery delightful!
+
+    Args:
+        kernel: Which kernel to analyze (default: python3)
+
+    Returns:
+        Contextual suggestions for your next move
+
+    Examples:
+        >>> suggest_next()
+        🔮 Based on your current state:
+
+        📊 You have a DataFrame 'df' loaded (1000×5)
+        You might want to:
+        • df.describe() - Get statistical summary
+        • df.info() - Check data types and memory usage
+        • df.head(10) - View first 10 rows
+        • df.isnull().sum() - Check for missing values
+
+        📦 You have pandas and matplotlib imported
+        Try visualizations:
+        • df.plot() - Quick line plot
+        • df.hist() - Distribution of numeric columns
+
+        💡 Pro tip: Your df has a 'date' column - try: df['date'] = pd.to_datetime(df['date'])
+    """
+    global KERNEL_IDS
+
+    # Check if kernel exists
+    if kernel not in KERNEL_IDS:
+        return {
+            "suggestions": [],
+            "message": f"🤔 No {kernel} kernel running. Try: execute('print(\"Hello!\")', kernel='{kernel}')",
+        }
+
+    # Get current kernel state
+    try:
+        # First, get the variables in the kernel
+        var_result = await _execute_code(
+            """
+import sys
+import json
+
+def _get_kernel_suggestions():
+    # Get all variables
+    vars_info = []
+    
+    # Get imported modules
+    imported_modules = set()
+    for name, obj in globals().items():
+        if hasattr(obj, '__module__') and not name.startswith('_'):
+            if hasattr(obj, '__name__'):
+                imported_modules.add(obj.__name__)
+    
+    # Analyze key variables
+    for name, obj in globals().items():
+        if name.startswith('_') or name in ['In', 'Out', 'exit', 'quit', 'get_ipython']:
+            continue
+            
+        try:
+            obj_type = type(obj).__name__
+            obj_info = {"name": name, "type": obj_type}
+            
+            # Add size info for common types
+            if hasattr(obj, 'shape'):
+                obj_info["shape"] = str(obj.shape)
+            elif hasattr(obj, '__len__') and not isinstance(obj, str):
+                obj_info["length"] = len(obj)
+            
+            # Special handling for DataFrames
+            if obj_type == 'DataFrame':
+                obj_info["columns"] = list(obj.columns)[:10]  # First 10 columns
+                obj_info["has_datetime"] = any('date' in col.lower() or 'time' in col.lower() for col in obj.columns)
+                obj_info["numeric_columns"] = list(obj.select_dtypes(include=['number']).columns)[:10]
+                
+            vars_info.append(obj_info)
+        except:
+            pass
+    
+    result = {
+        "variables": vars_info[:20],  # Top 20 variables
+        "modules": list(imported_modules)
+    }
+    
+    print(json.dumps(result))
+
+_get_kernel_suggestions()
+""",
+            kernel,
+        )
+
+        if var_result.get("error"):
+            # Simpler fallback
+            var_result = await _execute_code(
+                "import json; print(json.dumps({'variables': [], 'modules': []}))",
+                kernel,
+            )
+
+        # Parse the kernel state
+        import json
+
+        try:
+            kernel_info = json.loads(var_result.get("output", "{}"))
+        except (json.JSONDecodeError, TypeError):
+            kernel_info = {"variables": [], "modules": []}
+
+        # Build contextual suggestions
+        suggestions = []
+        tips = []
+
+        # Check for DataFrames
+        dataframes = [
+            v for v in kernel_info.get("variables", []) if v.get("type") == "DataFrame"
+        ]
+        if dataframes:
+            for df in dataframes:
+                df_name = df["name"]
+                shape = df.get("shape", "")
+                suggestions.append(
+                    {
+                        "context": f"📊 You have a DataFrame '{df_name}' loaded {shape}",
+                        "actions": [
+                            f"{df_name}.describe() - Get statistical summary",
+                            f"{df_name}.info() - Check data types and memory usage",
+                            f"{df_name}.head(10) - View first 10 rows",
+                            f"{df_name}.isnull().sum() - Check for missing values",
+                        ],
+                    }
+                )
+
+                # Add datetime tip if relevant
+                if df.get("has_datetime"):
+                    tips.append(
+                        f"💡 Pro tip: Found date/time columns in {df_name} - try pd.to_datetime() for time series analysis"
+                    )
+
+                # Add visualization suggestions if matplotlib/seaborn available
+                if any(
+                    mod in kernel_info.get("modules", [])
+                    for mod in ["matplotlib", "seaborn", "plotly"]
+                ):
+                    suggestions.append(
+                        {
+                            "context": f"📈 Visualization ready for '{df_name}'",
+                            "actions": [
+                                f"{df_name}.plot() - Quick line plot",
+                                f"{df_name}.hist() - Distribution of numeric columns",
+                                f"{df_name}.corr() - Correlation matrix",
+                                f"sns.heatmap({df_name}.corr()) - Correlation heatmap"
+                                if "seaborn" in kernel_info.get("modules", [])
+                                else None,
+                            ],
+                        }
+                    )
+
+        # Check for models
+        models = [
+            v
+            for v in kernel_info.get("variables", [])
+            if any(
+                model_type in v.get("type", "")
+                for model_type in ["Classifier", "Regressor", "Model", "Estimator"]
+            )
+        ]
+        if models:
+            for model in models:
+                model_name = model["name"]
+                suggestions.append(
+                    {
+                        "context": f"🤖 You have a model '{model_name}'",
+                        "actions": [
+                            f"{model_name}.score(X_test, y_test) - Evaluate model performance",
+                            f"{model_name}.predict(X_test) - Make predictions",
+                            f"{model_name}.feature_importances_ - Check feature importance (if available)",
+                        ],
+                    }
+                )
+
+        # Check for arrays/lists
+        arrays = [
+            v
+            for v in kernel_info.get("variables", [])
+            if v.get("type") in ["ndarray", "list", "Series"]
+        ]
+        if arrays and not dataframes:  # Only if no DataFrames (to avoid redundancy)
+            for arr in arrays[:3]:  # Limit to 3 arrays
+                arr_name = arr["name"]
+                size_info = (
+                    f" ({arr.get('shape', arr.get('length', ''))})"
+                    if arr.get("shape") or arr.get("length")
+                    else ""
+                )
+                suggestions.append(
+                    {
+                        "context": f"📐 You have array/list '{arr_name}'{size_info}",
+                        "actions": [
+                            f"np.mean({arr_name}) - Calculate mean",
+                            f"np.std({arr_name}) - Calculate standard deviation",
+                            f"plt.plot({arr_name}) - Quick visualization",
+                        ],
+                    }
+                )
+
+        # Module-specific suggestions
+        modules = kernel_info.get("modules", [])
+
+        if "pandas" in modules and not dataframes:
+            suggestions.append(
+                {
+                    "context": "📚 Pandas is imported but no data loaded",
+                    "actions": [
+                        "pd.read_csv('data.csv') - Load CSV file",
+                        "pd.read_excel('data.xlsx') - Load Excel file",
+                        "pd.DataFrame({'x': [1,2,3], 'y': [4,5,6]}) - Create sample DataFrame",
+                    ],
+                }
+            )
+
+        if "sklearn" in modules:
+            suggestions.append(
+                {
+                    "context": "🔬 Scikit-learn is ready",
+                    "actions": [
+                        "from sklearn.model_selection import train_test_split",
+                        "from sklearn.ensemble import RandomForestClassifier",
+                        "from sklearn.metrics import classification_report",
+                    ],
+                }
+            )
+
+        # If nothing specific found, give general suggestions
+        if not suggestions:
+            suggestions.append(
+                {
+                    "context": "🚀 Ready to start exploring!",
+                    "actions": [
+                        "import pandas as pd - Data manipulation",
+                        "import numpy as np - Numerical computing",
+                        "import matplotlib.pyplot as plt - Plotting",
+                        "%matplotlib inline - Enable inline plots (Jupyter)",
+                    ],
+                }
+            )
+
+        # Format the response
+        formatted_suggestions = []
+        for sugg in suggestions:
+            formatted_suggestions.append(f"\n{sugg['context']}")
+            formatted_suggestions.append("You might want to:")
+            for action in sugg["actions"]:
+                if action:  # Skip None values
+                    formatted_suggestions.append(f"  • {action}")
+
+        # Add tips if any
+        if tips:
+            formatted_suggestions.append("\n" + "\n".join(tips))
+
+        return {
+            "message": "🔮 Based on your current state:",
+            "suggestions": "\n".join(formatted_suggestions),
+            "kernel": kernel,
+            "variables_count": len(kernel_info.get("variables", [])),
+            "modules_count": len(modules),
+        }
+
+    except Exception as e:
+        return {
+            "message": "🤔 Let me check what's available...",
+            "suggestions": "Try: vars() to see your current variables",
+            "error": str(e),
+        }
+
 
 @mcp.tool()
 async def clear_kernel_state(kernel: str = None, confirm: bool = False) -> dict:
     """
     Clear kernel state (formerly 'reset') - ⚠️ DESTRUCTIVE OPERATION!
-    
+
     This completely restarts kernels, losing all variables and state.
     Think twice before using this - the whole point is persistence!
-    
+
     Args:
         kernel: Specific kernel to clear, or None for all kernels
         confirm: Must be True to actually perform the operation
-        
+
     Returns:
         Confirmation or warning message
-        
+
     Examples:
         >>> clear_kernel_state("python3")
         ⚠️ This will DELETE all variables in python3 kernel!
         Call again with confirm=True if you're sure.
-        
+
         >>> clear_kernel_state("python3", confirm=True)
         🗑️ Cleared python3 kernel state
-        
+
     When to use (rarely!):
         - Starting completely unrelated project
         - Recovering from corrupted state
         - Explicit cleanup request
-        
+
     Better alternatives:
         - Just define new variables (old ones persist but don't interfere)
         - Use different kernel for different project
@@ -1107,29 +1884,26 @@ async def clear_kernel_state(kernel: str = None, confirm: bool = False) -> dict:
             return {
                 "message": f"⚠️ This will DELETE all variables in {kernel} kernel!\nYour work will be lost. Call again with confirm=True if you're sure.",
                 "requires_confirmation": True,
-                "kernel": kernel
+                "kernel": kernel,
             }
         else:
             kernel_list = list(KERNEL_IDS.keys()) if KERNEL_IDS else []
             return {
                 "message": f"⚠️ This will DELETE all variables in ALL kernels ({', '.join(kernel_list) if kernel_list else 'none active'})!\nYour work will be lost. Call again with confirm=True if you're sure.",
                 "requires_confirmation": True,
-                "kernels": kernel_list
+                "kernels": kernel_list,
             }
-    
+
     # User confirmed, proceed with reset
     result = await reset(kernel)
-    
+
     # Make the message clearer about what happened
     if "Deleted" in result.get("message", ""):
         cleared = result["message"].replace("Deleted", "🗑️ Cleared state for")
-        return {
-            "message": cleared,
-            "cleared": True,
-            "kernel": kernel
-        }
-    
+        return {"message": cleared, "cleared": True, "kernel": kernel}
+
     return result
+
 
 @mcp.tool()
 async def reset(kernel: str = None) -> dict:
@@ -1192,8 +1966,7 @@ async def reset(kernel: str = None) -> dict:
             try:
                 kernel_id = kernel_info["id"]
                 response = await client.delete(
-                    f"{jupyter_url}/api/kernels/{kernel_id}",
-                    headers=headers
+                    f"{jupyter_url}/api/kernels/{kernel_id}", headers=headers
                 )
                 response.raise_for_status()
                 debug_print(f"Deleted {kernel_name} kernel: {kernel_id}")
@@ -1206,6 +1979,7 @@ async def reset(kernel: str = None) -> dict:
         return {"message": f"Deleted kernels: {', '.join(deleted_kernels)}"}
     else:
         return {"message": "No kernels were deleted"}
+
 
 @mcp.tool()
 async def create_notebook(name: str, kernel: str = "python3") -> dict:
@@ -1273,12 +2047,10 @@ async def create_notebook(name: str, kernel: str = "python3") -> dict:
         "type": "notebook",
         "content": {
             "cells": [],
-            "metadata": {
-                "kernelspec": kernel_spec
-            },
+            "metadata": {"kernelspec": kernel_spec},
             "nbformat": 4,
-            "nbformat_minor": 5
-        }
+            "nbformat_minor": 5,
+        },
     }
 
     # PUT to create the notebook
@@ -1286,7 +2058,7 @@ async def create_notebook(name: str, kernel: str = "python3") -> dict:
         response = await client.put(
             f"{jupyter_url}/api/contents/{name}.ipynb",
             headers=headers,
-            json=notebook_content
+            json=notebook_content,
         )
         response.raise_for_status()
 
@@ -1296,8 +2068,9 @@ async def create_notebook(name: str, kernel: str = "python3") -> dict:
         "path": f"{name}.ipynb",
         "kernel": kernel,
         "kernel_spec": kernel_spec,
-        "created": True
+        "created": True,
     }
+
 
 @mcp.tool()
 async def add_to_notebook(notebook: str, code: str) -> dict:
@@ -1371,14 +2144,13 @@ async def add_to_notebook(notebook: str, code: str) -> dict:
         headers["Authorization"] = f"token {JUPYTER_TOKEN}"
 
     # Ensure notebook name ends with .ipynb
-    if not notebook.endswith('.ipynb'):
+    if not notebook.endswith(".ipynb"):
         notebook = f"{notebook}.ipynb"
 
     async with httpx.AsyncClient() as client:
         # GET the notebook content
         response = await client.get(
-            f"{jupyter_url}/api/contents/{notebook}",
-            headers=headers
+            f"{jupyter_url}/api/contents/{notebook}", headers=headers
         )
         response.raise_for_status()
 
@@ -1401,8 +2173,10 @@ async def add_to_notebook(notebook: str, code: str) -> dict:
             "cell_type": "code",
             "execution_count": len(content["cells"]) + 1,
             "metadata": {},
-            "source": code if isinstance(code, list) else code.splitlines(keepends=True),
-            "outputs": []
+            "source": code
+            if isinstance(code, list)
+            else code.splitlines(keepends=True),
+            "outputs": [],
         }
 
         # Add output if there was any
@@ -1411,41 +2185,38 @@ async def add_to_notebook(notebook: str, code: str) -> dict:
                 error_parts = execution_result["output"].split(":", 1)
                 ename = error_parts[0].strip()
                 evalue = error_parts[1].strip() if len(error_parts) > 1 else ""
-                new_cell["outputs"].append({
-                    "output_type": "error",
-                    "ename": ename,
-                    "evalue": evalue,
-                    "traceback": [execution_result["output"]]
-                })
+                new_cell["outputs"].append(
+                    {
+                        "output_type": "error",
+                        "ename": ename,
+                        "evalue": evalue,
+                        "traceback": [execution_result["output"]],
+                    }
+                )
             else:
-                new_cell["outputs"].append({
-                    "output_type": "stream",
-                    "name": "stdout",
-                    "text": execution_result["output"]
-                })
+                new_cell["outputs"].append(
+                    {
+                        "output_type": "stream",
+                        "name": "stdout",
+                        "text": execution_result["output"],
+                    }
+                )
 
         # Append the new cell
         content["cells"].append(new_cell)
 
         # PUT the updated notebook back
-        update_data = {
-            "type": "notebook",
-            "content": content
-        }
+        update_data = {"type": "notebook", "content": content}
 
         response = await client.put(
-            f"{jupyter_url}/api/contents/{notebook}",
-            headers=headers,
-            json=update_data
+            f"{jupyter_url}/api/contents/{notebook}", headers=headers, json=update_data
         )
         response.raise_for_status()
 
     debug_print(f"Added cell to notebook: {notebook}")
 
-    return {
-        "output": execution_result["output"],
-        "cell_number": len(content["cells"])
-    }
+    return {"output": execution_result["output"], "cell_number": len(content["cells"])}
+
 
 @mcp.tool()
 async def read_notebook(name: str) -> dict:
@@ -1491,14 +2262,13 @@ async def read_notebook(name: str) -> dict:
         headers["Authorization"] = f"token {JUPYTER_TOKEN}"
 
     # Ensure notebook name ends with .ipynb
-    if not name.endswith('.ipynb'):
+    if not name.endswith(".ipynb"):
         name = f"{name}.ipynb"
 
     async with httpx.AsyncClient() as client:
         # GET the notebook content
         response = await client.get(
-            f"{jupyter_url}/api/contents/{name}",
-            headers=headers
+            f"{jupyter_url}/api/contents/{name}", headers=headers
         )
         response.raise_for_status()
 
@@ -1510,7 +2280,9 @@ async def read_notebook(name: str) -> dict:
         for cell in content["cells"]:
             cell_info = {
                 "type": cell["cell_type"],
-                "source": "\n".join(cell["source"]) if isinstance(cell["source"], list) else cell["source"]
+                "source": "\n".join(cell["source"])
+                if isinstance(cell["source"], list)
+                else cell["source"],
             }
 
             # Add outputs for code cells
@@ -1520,14 +2292,18 @@ async def read_notebook(name: str) -> dict:
                     if output["output_type"] == "stream":
                         outputs.append(output.get("text", ""))
                     elif output["output_type"] == "error":
-                        outputs.append(f"{output.get('ename', 'Error')}: {output.get('evalue', '')}")
+                        outputs.append(
+                            f"{output.get('ename', 'Error')}: {output.get('evalue', '')}"
+                        )
                     elif output["output_type"] == "execute_result":
                         # Handle execute_result which may have data
                         if "text/plain" in output.get("data", {}):
                             outputs.append(output["data"]["text/plain"])
 
                 # Join all outputs
-                cell_info["output"] = "".join(outputs) if isinstance(outputs, list) else outputs
+                cell_info["output"] = (
+                    "".join(outputs) if isinstance(outputs, list) else outputs
+                )
             else:
                 cell_info["output"] = ""
 
@@ -1535,23 +2311,28 @@ async def read_notebook(name: str) -> dict:
 
     debug_print(f"Read notebook: {name} ({len(cells)} cells)")
 
-    return {
-        "cells": cells
-    }
+    return {"cells": cells}
+
 
 @mcp.tool()
-async def notebook(operation: str, name: str = None, content: str = None, 
-                  cell_type: str = "code", kernel: str = "python3", 
-                  destination: str = None, confirm: bool = False) -> dict:
+async def notebook(
+    operation: str,
+    name: str = None,
+    content: str = None,
+    cell_type: str = "code",
+    kernel: str = "python3",
+    destination: str = None,
+    confirm: bool = False,
+) -> dict:
     """
     Your notebook companion - natural operations without the cognitive load.
-    
+
     Just tell me what you want to do, and I'll handle the details.
-    
+
     Operations:
         "create" / "new" - Start a fresh notebook
         "add" / "append" - Add code or markdown to notebook
-        "read" / "show" / "view" - Display notebook contents  
+        "read" / "show" / "view" - Display notebook contents
         "list" / "ls" - List all notebooks
         "search" / "find" - Search across notebooks
         "run" / "execute" - Run all cells in notebook
@@ -1560,7 +2341,7 @@ async def notebook(operation: str, name: str = None, content: str = None,
         "copy" / "duplicate" - Make a copy of notebook
         "rename" / "mv" - Rename a notebook
         "delete" / "rm" - Delete a notebook (with confirmation)
-        
+
     Args:
         operation: What you want to do (see above)
         name: Notebook name (I'll handle the .ipynb extension)
@@ -1569,83 +2350,105 @@ async def notebook(operation: str, name: str = None, content: str = None,
         kernel: Kernel type for create operations
         destination: Destination name for copy/rename operations
         confirm: Set to True to confirm destructive operations
-        
+
     Examples:
         # Create and build a notebook naturally
         >>> notebook("create", "analysis")
         📓 Created notebook: analysis.ipynb
-        
+
         >>> notebook("add", "analysis", "import pandas as pd\\ndf = pd.read_csv('data.csv')")
         ✅ Added code cell #1 to analysis.ipynb
-        
+
         >>> notebook("add", "analysis", "# Data Analysis\\nExploring sales data", cell_type="markdown")
         📝 Added markdown cell #2 to analysis.ipynb
-        
+
         # Natural reading
         >>> notebook("show", "analysis")
         📓 Notebook: analysis.ipynb (2 cells)
         [Shows formatted notebook content]
-        
+
         # Quick operations
         >>> notebook("list")
         📚 Found 3 notebooks: analysis.ipynb, experiments.ipynb, scratch.ipynb
-        
+
         >>> notebook("search", content="RandomForest")
         🔍 Found 2 matches in experiments.ipynb
-        
+
     The magic: Operations are forgiving and helpful. Forgot .ipynb? No problem.
     Need suggestions? I'll provide them. Want confirmation on dangerous ops? Got it.
     """
-    
+
     # Normalize operation names
     op_map = {
-        "create": "create", "new": "create", "make": "create",
-        "add": "add", "append": "add", "write": "add",
-        "read": "read", "show": "read", "view": "read", "cat": "read",
-        "list": "list", "ls": "list", "dir": "list",
-        "search": "search", "find": "search", "grep": "search",
-        "run": "run", "execute": "run", "run_all": "run",
-        "stats": "stats", "info": "stats", "stat": "stats",
-        "clear": "clear", "clear_outputs": "clear",
-        "copy": "copy", "duplicate": "copy", "cp": "copy",
-        "rename": "rename", "mv": "rename", "move": "rename",
-        "delete": "delete", "rm": "delete", "remove": "delete"
+        "create": "create",
+        "new": "create",
+        "make": "create",
+        "add": "add",
+        "append": "add",
+        "write": "add",
+        "read": "read",
+        "show": "read",
+        "view": "read",
+        "cat": "read",
+        "list": "list",
+        "ls": "list",
+        "dir": "list",
+        "search": "search",
+        "find": "search",
+        "grep": "search",
+        "run": "run",
+        "execute": "run",
+        "run_all": "run",
+        "stats": "stats",
+        "info": "stats",
+        "stat": "stats",
+        "clear": "clear",
+        "clear_outputs": "clear",
+        "copy": "copy",
+        "duplicate": "copy",
+        "cp": "copy",
+        "rename": "rename",
+        "mv": "rename",
+        "move": "rename",
+        "delete": "delete",
+        "rm": "delete",
+        "remove": "delete",
     }
-    
+
     op = op_map.get(operation.lower(), operation.lower())
-    
+
     # Auto-handle .ipynb extension
-    if name and not name.endswith('.ipynb'):
+    if name and not name.endswith(".ipynb"):
         notebook_name = name
         name = f"{name}.ipynb"
     else:
-        notebook_name = name.replace('.ipynb', '') if name else None
-    
+        notebook_name = name.replace(".ipynb", "") if name else None
+
     # Route to appropriate operation
     if op == "create":
         if not notebook_name:
             return {"error": "📝 Please provide a notebook name"}
-        
+
         # Create notebook directly on filesystem for reliability
         import json
         import os
         import re
-        
+
         # Sanitize notebook name - remove any potentially dangerous characters
-        safe_name = re.sub(r'[^a-zA-Z0-9_-]', '_', notebook_name)
+        safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", notebook_name)
         safe_name = safe_name[:100]  # Limit length to prevent filesystem issues
-        
+
         # Ensure we're writing to current directory only
         filename = os.path.basename(f"{safe_name}.ipynb")
         filepath = os.path.join(os.getcwd(), filename)
-        
+
         # Check if file already exists
         if os.path.exists(filepath):
             return {
                 "error": f"📓 Notebook '{filename}' already exists. Choose a different name or delete the existing notebook.",
-                "path": filename
+                "path": filename,
             }
-        
+
         # Get kernel specification
         kernel_spec = _get_kernel_spec(kernel)
 
@@ -1654,121 +2457,134 @@ async def notebook(operation: str, name: str = None, content: str = None,
             "cells": [],
             "metadata": {
                 "kernelspec": kernel_spec,
-                "language_info": {
-                    "name": kernel_spec.get("language", "python")
-                }
+                "language_info": {"name": kernel_spec.get("language", "python")},
             },
             "nbformat": 4,
-            "nbformat_minor": 5
+            "nbformat_minor": 5,
         }
 
         # Write notebook to filesystem
         try:
-            with open(filepath, 'w') as f:
+            with open(filepath, "w") as f:
                 json.dump(notebook_content, f, indent=2)
-            
+
             return {
                 "message": f"📓 Created notebook: {filename}",
                 "path": filename,
-                "kernel": kernel
+                "kernel": kernel,
             }
         except Exception as e:
             return {
                 "error": f"❌ Failed to create notebook: {str(e)}",
-                "path": filename
+                "path": filename,
             }
-    
+
     elif op == "add":
         if not notebook_name or not content:
             return {"error": "📝 Please provide notebook name and content"}
-        
+
         cell_type = cell_type.lower()
-        
+
         # Direct filesystem implementation for reliability
         import json
         import os
         import re
-        
+
         # Sanitize notebook name
-        safe_name = re.sub(r'[^a-zA-Z0-9_-]', '_', notebook_name.replace('.ipynb', ''))
+        safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", notebook_name.replace(".ipynb", ""))
         safe_name = safe_name[:100]
-        
+
         # Ensure notebook name ends with .ipynb
         notebook_file = f"{safe_name}.ipynb"
         filepath = os.path.join(os.getcwd(), notebook_file)
 
         try:
             # Read existing notebook
-            with open(filepath, 'r') as f:
+            with open(filepath, "r") as f:
                 notebook_content = json.load(f)
         except FileNotFoundError:
-            return {"error": f"📝 Notebook {notebook_file} not found. Create it first with notebook('create', '{safe_name}')"}
+            return {
+                "error": f"📝 Notebook {notebook_file} not found. Create it first with notebook('create', '{safe_name}')"
+            }
 
         if cell_type == "markdown" or cell_type == "md":
             # Create new markdown cell
             new_cell = {
                 "cell_type": "markdown",
                 "metadata": {},
-                "source": content.splitlines(keepends=True) if isinstance(content, str) else content
+                "source": content.splitlines(keepends=True)
+                if isinstance(content, str)
+                else content,
             }
         else:
             # Code cell - execute and capture output
             kernel_spec_name = "python3"  # default
-            if "metadata" in notebook_content and "kernelspec" in notebook_content["metadata"]:
-                kernel_spec_name = notebook_content["metadata"]["kernelspec"].get("name", "python3")
-            
+            if (
+                "metadata" in notebook_content
+                and "kernelspec" in notebook_content["metadata"]
+            ):
+                kernel_spec_name = notebook_content["metadata"]["kernelspec"].get(
+                    "name", "python3"
+                )
+
             # Convert kernel spec name to our kernel type
             kernel_type = _get_kernel_type_from_spec(kernel_spec_name)
-            
+
             # Execute the code
             execution_result = await _execute_code(content, kernel_type)
-            
+
             # Create new code cell
             new_cell = {
                 "cell_type": "code",
                 "metadata": {},
-                "source": content.splitlines(keepends=True) if isinstance(content, str) else content,
+                "source": content.splitlines(keepends=True)
+                if isinstance(content, str)
+                else content,
                 "outputs": [],
-                "execution_count": len(notebook_content["cells"]) + 1
+                "execution_count": len(notebook_content["cells"]) + 1,
             }
-            
+
             # Add output if there was any
             if execution_result.get("output"):
                 if execution_result.get("error"):
-                    new_cell["outputs"].append({
-                        "output_type": "error",
-                        "ename": "Error",
-                        "evalue": execution_result["output"],
-                        "traceback": [execution_result["output"]]
-                    })
+                    new_cell["outputs"].append(
+                        {
+                            "output_type": "error",
+                            "ename": "Error",
+                            "evalue": execution_result["output"],
+                            "traceback": [execution_result["output"]],
+                        }
+                    )
                 else:
-                    new_cell["outputs"].append({
-                        "output_type": "stream",
-                        "name": "stdout",
-                        "text": execution_result["output"]
-                    })
-        
+                    new_cell["outputs"].append(
+                        {
+                            "output_type": "stream",
+                            "name": "stdout",
+                            "text": execution_result["output"],
+                        }
+                    )
+
         # Append the new cell
         notebook_content["cells"].append(new_cell)
         cell_number = len(notebook_content["cells"])
-        
+
         # Write updated notebook back to filesystem
         try:
-            with open(filepath, 'w') as f:
+            with open(filepath, "w") as f:
                 json.dump(notebook_content, f, indent=2)
-            
+
             cell_type_emoji = "📝" if cell_type in ["markdown", "md"] else "✅"
             return {
                 "message": f"{cell_type_emoji} Added {cell_type} cell #{cell_number} to {notebook_file}",
-                "cell_number": cell_number
+                "cell_number": cell_number,
             }
         except Exception as e:
             return {"error": f"❌ Failed to save notebook: {str(e)}"}
-    
+
     elif op == "read":
         if not notebook_name:
             return {"error": "📝 Please provide a notebook name"}
-        
+
         # Direct implementation of read functionality
         jupyter_url = JUPYTER_URL
         headers = {}
@@ -1776,13 +2592,16 @@ async def notebook(operation: str, name: str = None, content: str = None,
             headers["Authorization"] = f"token {JUPYTER_TOKEN}"
 
         # Ensure notebook name ends with .ipynb
-        notebook_file = notebook_name if notebook_name.endswith('.ipynb') else f"{notebook_name}.ipynb"
+        notebook_file = (
+            notebook_name
+            if notebook_name.endswith(".ipynb")
+            else f"{notebook_name}.ipynb"
+        )
 
         async with httpx.AsyncClient() as client:
             # GET the notebook content
             response = await client.get(
-                f"{jupyter_url}/api/contents/{notebook_file}",
-                headers=headers
+                f"{jupyter_url}/api/contents/{notebook_file}", headers=headers
             )
             response.raise_for_status()
 
@@ -1794,7 +2613,9 @@ async def notebook(operation: str, name: str = None, content: str = None,
             for cell in content["cells"]:
                 cell_info = {
                     "type": cell["cell_type"],
-                    "source": "\n".join(cell["source"]) if isinstance(cell["source"], list) else cell["source"]
+                    "source": "\n".join(cell["source"])
+                    if isinstance(cell["source"], list)
+                    else cell["source"],
                 }
 
                 # Add outputs for code cells
@@ -1804,45 +2625,49 @@ async def notebook(operation: str, name: str = None, content: str = None,
                         if output["output_type"] == "stream":
                             outputs.append(output.get("text", ""))
                         elif output["output_type"] == "error":
-                            outputs.append(f"{output.get('ename', 'Error')}: {output.get('evalue', '')}")
+                            outputs.append(
+                                f"{output.get('ename', 'Error')}: {output.get('evalue', '')}"
+                            )
                         elif output["output_type"] == "execute_result":
                             # Handle execute_result which may have data
                             if "text/plain" in output.get("data", {}):
                                 outputs.append(output["data"]["text/plain"])
 
                     # Join all outputs
-                    cell_info["output"] = "".join(outputs) if isinstance(outputs, list) else outputs
+                    cell_info["output"] = (
+                        "".join(outputs) if isinstance(outputs, list) else outputs
+                    )
                 else:
                     cell_info["output"] = ""
 
                 cells.append(cell_info)
-        
+
         # Format cells nicely
         formatted = [f"📓 Notebook: {name} ({len(cells)} cells)\n"]
         for i, cell in enumerate(cells):
             if cell["type"] == "markdown":
-                preview = cell["source"][:80].replace('\n', ' ')
+                preview = cell["source"][:80].replace("\n", " ")
                 if len(cell["source"]) > 80:
                     preview += "..."
                 formatted.append(f"[{i}] 📝 Markdown: {preview}")
             else:
-                lines = cell["source"].split('\n')
+                lines = cell["source"].split("\n")
                 preview = lines[0][:60] if lines else "(empty)"
                 if len(lines) > 1 or len(lines[0]) > 60:
                     preview += "..."
                 formatted.append(f"[{i}] 💻 Code: {preview}")
                 if cell.get("output"):
-                    out_preview = cell["output"][:60].strip().replace('\n', ' ')
+                    out_preview = cell["output"][:60].strip().replace("\n", " ")
                     if len(cell["output"]) > 60:
                         out_preview += "..."
                     formatted.append(f"    → {out_preview}")
-        
+
         return {
             "message": "\n".join(formatted),
             "cells": cells,
-            "total_cells": len(cells)
+            "total_cells": len(cells),
         }
-    
+
     elif op == "list":
         # Get notebooks directly via Jupyter API
         jupyter_url = JUPYTER_URL
@@ -1851,28 +2676,29 @@ async def notebook(operation: str, name: str = None, content: str = None,
             headers["Authorization"] = f"token {JUPYTER_TOKEN}"
 
         async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{jupyter_url}/api/contents",
-                headers=headers
-            )
+            response = await client.get(f"{jupyter_url}/api/contents", headers=headers)
             response.raise_for_status()
             contents = response.json()["content"]
-            notebooks = [item["name"] for item in contents if item["type"] == "notebook"]
-        
+            notebooks = [
+                item["name"] for item in contents if item["type"] == "notebook"
+            ]
+
         if not notebooks:
-            return {"message": "📚 No notebooks found. Create one with: notebook('create', 'my_first_notebook')"}
-        
+            return {
+                "message": "📚 No notebooks found. Create one with: notebook('create', 'my_first_notebook')"
+            }
+
         return {
             "message": f"📚 Found {len(notebooks)} notebook{'s' if len(notebooks) != 1 else ''}: {', '.join(notebooks)}",
             "notebooks": notebooks,
-            "count": len(notebooks)
+            "count": len(notebooks),
         }
-    
+
     elif op == "search":
         query = content or ""
         if not query:
             return {"error": "🔍 Please provide search query in content parameter"}
-        
+
         # Direct implementation of search functionality
         jupyter_url = JUPYTER_URL
         headers = {}
@@ -1883,10 +2709,7 @@ async def notebook(operation: str, name: str = None, content: str = None,
 
         async with httpx.AsyncClient() as client:
             # First, get list of all notebooks
-            response = await client.get(
-                f"{jupyter_url}/api/contents",
-                headers=headers
-            )
+            response = await client.get(f"{jupyter_url}/api/contents", headers=headers)
             response.raise_for_status()
 
             contents = response.json()["content"]
@@ -1898,8 +2721,7 @@ async def notebook(operation: str, name: str = None, content: str = None,
 
                 # Get notebook content
                 response = await client.get(
-                    f"{jupyter_url}/api/contents/{nb_name}",
-                    headers=headers
+                    f"{jupyter_url}/api/contents/{nb_name}", headers=headers
                 )
                 response.raise_for_status()
 
@@ -1909,7 +2731,11 @@ async def notebook(operation: str, name: str = None, content: str = None,
                 # Search through cells
                 for cell_idx, cell in enumerate(content["cells"]):
                     # Get cell source as string
-                    cell_source = "".join(cell["source"]) if isinstance(cell["source"], list) else cell["source"]
+                    cell_source = (
+                        "".join(cell["source"])
+                        if isinstance(cell["source"], list)
+                        else cell["source"]
+                    )
 
                     # Case-insensitive search
                     if query.lower() in cell_source.lower():
@@ -1919,20 +2745,22 @@ async def notebook(operation: str, name: str = None, content: str = None,
                             preview = preview[:150] + "..."
                         else:
                             # If short, show the whole cell
-                            first_newline = preview.find('\n')
+                            first_newline = preview.find("\n")
                             if first_newline > 0 and first_newline < 150:
                                 preview = preview[:first_newline] + "..."
 
-                        matches.append({
-                            "notebook": nb_name,
-                            "cell": cell_idx,
-                            "cell_type": cell["cell_type"],
-                            "preview": preview
-                        })
-        
+                        matches.append(
+                            {
+                                "notebook": nb_name,
+                                "cell": cell_idx,
+                                "cell_type": cell["cell_type"],
+                                "preview": preview,
+                            }
+                        )
+
         if not matches:
             return {"message": f"🔍 No matches found for '{query}'"}
-        
+
         # Group by notebook
         by_notebook = {}
         for match in matches:
@@ -1940,25 +2768,29 @@ async def notebook(operation: str, name: str = None, content: str = None,
             if nb not in by_notebook:
                 by_notebook[nb] = []
             by_notebook[nb].append(match)
-        
-        formatted = [f"🔍 Found {len(matches)} match{'es' if len(matches) != 1 else ''} for '{query}':\n"]
+
+        formatted = [
+            f"🔍 Found {len(matches)} match{'es' if len(matches) != 1 else ''} for '{query}':\n"
+        ]
         for nb, nb_matches in by_notebook.items():
             formatted.append(f"\n📓 {nb} ({len(nb_matches)} matches):")
             for m in nb_matches[:3]:  # Show first 3 matches per notebook
-                formatted.append(f"  [{m['cell']}] {m['cell_type']}: {m['preview'][:60]}...")
+                formatted.append(
+                    f"  [{m['cell']}] {m['cell_type']}: {m['preview'][:60]}..."
+                )
             if len(nb_matches) > 3:
                 formatted.append(f"  ... and {len(nb_matches) - 3} more matches")
-        
+
         return {
             "message": "\n".join(formatted),
             "matches": matches,
-            "total": len(matches)
+            "total": len(matches),
         }
-    
+
     elif op == "run":
         if not notebook_name:
             return {"error": "📝 Please provide a notebook name"}
-        
+
         # Direct implementation of run_all_cells functionality
         jupyter_url = JUPYTER_URL
         headers = {}
@@ -1966,13 +2798,16 @@ async def notebook(operation: str, name: str = None, content: str = None,
             headers["Authorization"] = f"token {JUPYTER_TOKEN}"
 
         # Ensure notebook name ends with .ipynb
-        notebook_file = notebook_name if notebook_name.endswith('.ipynb') else f"{notebook_name}.ipynb"
+        notebook_file = (
+            notebook_name
+            if notebook_name.endswith(".ipynb")
+            else f"{notebook_name}.ipynb"
+        )
 
         async with httpx.AsyncClient() as client:
             # GET the notebook content
             response = await client.get(
-                f"{jupyter_url}/api/contents/{notebook_file}",
-                headers=headers
+                f"{jupyter_url}/api/contents/{notebook_file}", headers=headers
             )
             response.raise_for_status()
 
@@ -1982,7 +2817,9 @@ async def notebook(operation: str, name: str = None, content: str = None,
             # Get the kernel spec from the notebook metadata
             kernel_spec_name = "python3"  # default
             if "metadata" in content and "kernelspec" in content["metadata"]:
-                kernel_spec_name = content["metadata"]["kernelspec"].get("name", "python3")
+                kernel_spec_name = content["metadata"]["kernelspec"].get(
+                    "name", "python3"
+                )
 
             # Convert kernel spec name to our kernel type
             kernel_type = _get_kernel_type_from_spec(kernel_spec_name)
@@ -1995,7 +2832,11 @@ async def notebook(operation: str, name: str = None, content: str = None,
             for cell_idx, cell in enumerate(content["cells"]):
                 if cell["cell_type"] == "code":
                     # Get the code from the cell
-                    code = "".join(cell["source"]) if isinstance(cell["source"], list) else cell["source"]
+                    code = (
+                        "".join(cell["source"])
+                        if isinstance(cell["source"], list)
+                        else cell["source"]
+                    )
 
                     # Execute the code with the notebook's kernel
                     execution_result = await _execute_code(code, kernel_type)
@@ -2008,19 +2849,25 @@ async def notebook(operation: str, name: str = None, content: str = None,
                             error_count += 1
                             error_parts = execution_result["output"].split(":", 1)
                             ename = error_parts[0].strip()
-                            evalue = error_parts[1].strip() if len(error_parts) > 1 else ""
-                            cell["outputs"].append({
-                                "output_type": "error",
-                                "ename": ename,
-                                "evalue": evalue,
-                                "traceback": [execution_result["output"]]
-                            })
+                            evalue = (
+                                error_parts[1].strip() if len(error_parts) > 1 else ""
+                            )
+                            cell["outputs"].append(
+                                {
+                                    "output_type": "error",
+                                    "ename": ename,
+                                    "evalue": evalue,
+                                    "traceback": [execution_result["output"]],
+                                }
+                            )
                         else:
-                            cell["outputs"].append({
-                                "output_type": "stream",
-                                "name": "stdout",
-                                "text": execution_result["output"]
-                            })
+                            cell["outputs"].append(
+                                {
+                                    "output_type": "stream",
+                                    "name": "stdout",
+                                    "text": execution_result["output"],
+                                }
+                            )
 
                     # Update execution count
                     cell["execution_count"] = execution_number
@@ -2028,29 +2875,26 @@ async def notebook(operation: str, name: str = None, content: str = None,
                     executed_count += 1
 
             # PUT the updated notebook back
-            update_data = {
-                "type": "notebook",
-                "content": content
-            }
+            update_data = {"type": "notebook", "content": content}
 
             response = await client.put(
                 f"{jupyter_url}/api/contents/{notebook_file}",
                 headers=headers,
-                json=update_data
+                json=update_data,
             )
             response.raise_for_status()
-        
+
         status = "✅" if error_count == 0 else "⚠️"
         return {
             "message": f"{status} Executed {executed_count} cells in {name} ({error_count} errors)",
             "executed": executed_count,
-            "errors": error_count
+            "errors": error_count,
         }
-    
+
     elif op == "stats":
         if not notebook_name:
             return {"error": "📝 Please provide a notebook name"}
-        
+
         # Direct implementation of get_notebook_stats functionality
         jupyter_url = JUPYTER_URL
         headers = {}
@@ -2058,13 +2902,16 @@ async def notebook(operation: str, name: str = None, content: str = None,
             headers["Authorization"] = f"token {JUPYTER_TOKEN}"
 
         # Ensure notebook name ends with .ipynb
-        notebook_file = notebook_name if notebook_name.endswith('.ipynb') else f"{notebook_name}.ipynb"
+        notebook_file = (
+            notebook_name
+            if notebook_name.endswith(".ipynb")
+            else f"{notebook_name}.ipynb"
+        )
 
         async with httpx.AsyncClient() as client:
             # GET the notebook content
             response = await client.get(
-                f"{jupyter_url}/api/contents/{notebook_file}",
-                headers=headers
+                f"{jupyter_url}/api/contents/{notebook_file}", headers=headers
             )
             response.raise_for_status()
 
@@ -2086,7 +2933,7 @@ async def notebook(operation: str, name: str = None, content: str = None,
                 if isinstance(cell_source, list):
                     line_count = len(cell_source)
                 else:
-                    line_count = cell_source.count('\n') + 1 if cell_source else 0
+                    line_count = cell_source.count("\n") + 1 if cell_source else 0
 
                 if cell["cell_type"] == "code":
                     code_cells += 1
@@ -2121,18 +2968,18 @@ async def notebook(operation: str, name: str = None, content: str = None,
                 "cells_with_outputs": cells_with_outputs,
                 "total_outputs": total_outputs,
                 "kernel": kernel_name,
-                "kernel_display_name": kernel_display_name
+                "kernel_display_name": kernel_display_name,
             }
-        
+
         return {
             "message": f"📊 {name}: {result['code_cells']} code cells, {result['markdown_cells']} markdown cells, {result['code_lines']} lines of code",
-            **result
+            **result,
         }
-    
+
     elif op == "clear":
         if not notebook_name:
             return {"error": "📝 Please provide a notebook name"}
-        
+
         # Direct implementation of clear_notebook_outputs functionality
         jupyter_url = JUPYTER_URL
         headers = {}
@@ -2140,13 +2987,16 @@ async def notebook(operation: str, name: str = None, content: str = None,
             headers["Authorization"] = f"token {JUPYTER_TOKEN}"
 
         # Ensure notebook name ends with .ipynb
-        notebook_file = notebook_name if notebook_name.endswith('.ipynb') else f"{notebook_name}.ipynb"
+        notebook_file = (
+            notebook_name
+            if notebook_name.endswith(".ipynb")
+            else f"{notebook_name}.ipynb"
+        )
 
         async with httpx.AsyncClient() as client:
             # GET the notebook content
             response = await client.get(
-                f"{jupyter_url}/api/contents/{notebook_file}",
-                headers=headers
+                f"{jupyter_url}/api/contents/{notebook_file}", headers=headers
             )
             response.raise_for_status()
 
@@ -2165,31 +3015,28 @@ async def notebook(operation: str, name: str = None, content: str = None,
                         cell["execution_count"] = None
 
             # PUT the updated notebook back
-            update_data = {
-                "type": "notebook",
-                "content": content
-            }
+            update_data = {"type": "notebook", "content": content}
 
             response = await client.put(
                 f"{jupyter_url}/api/contents/{notebook_file}",
                 headers=headers,
-                json=update_data
+                json=update_data,
             )
             response.raise_for_status()
-        
+
         return {
             "message": f"🧹 Cleared outputs from {cleared_count} cells in {name}",
-            "cleared": cleared_count
+            "cleared": cleared_count,
         }
-    
+
     elif op == "copy":
         if not notebook_name:
             return {"error": "📝 Please provide source notebook name"}
-        
+
         dest = destination or f"{notebook_name}_copy"
-        dest_name = dest.replace('.ipynb', '') if dest.endswith('.ipynb') else dest
+        dest_name = dest.replace(".ipynb", "") if dest.endswith(".ipynb") else dest
         dest_file = f"{dest_name}.ipynb"
-        
+
         # Direct implementation of copy_notebook functionality
         jupyter_url = JUPYTER_URL
         headers = {}
@@ -2197,48 +3044,48 @@ async def notebook(operation: str, name: str = None, content: str = None,
             headers["Authorization"] = f"token {JUPYTER_TOKEN}"
 
         # Ensure source notebook name ends with .ipynb
-        source_file = notebook_name if notebook_name.endswith('.ipynb') else f"{notebook_name}.ipynb"
+        source_file = (
+            notebook_name
+            if notebook_name.endswith(".ipynb")
+            else f"{notebook_name}.ipynb"
+        )
 
         async with httpx.AsyncClient() as client:
             # GET the source notebook content
             response = await client.get(
-                f"{jupyter_url}/api/contents/{source_file}",
-                headers=headers
+                f"{jupyter_url}/api/contents/{source_file}", headers=headers
             )
             response.raise_for_status()
 
             notebook_data = response.json()
 
             # Create copy data with the new destination
-            copy_data = {
-                "type": "notebook",
-                "content": notebook_data["content"]
-            }
+            copy_data = {"type": "notebook", "content": notebook_data["content"]}
 
             # PUT to create the destination notebook
             response = await client.put(
                 f"{jupyter_url}/api/contents/{dest_file}",
                 headers=headers,
-                json=copy_data
+                json=copy_data,
             )
             response.raise_for_status()
-        
+
         return {
             "message": f"📋 Copied {name} → {dest_file}",
             "source": name,
-            "destination": dest_file
+            "destination": dest_file,
         }
-    
+
     elif op == "rename":
         if not notebook_name:
             return {"error": "📝 Please provide current notebook name"}
-        
+
         new_name = destination or content
         if not new_name:
             return {"error": "📝 Please provide new name"}
-        
-        new_file = new_name if new_name.endswith('.ipynb') else f"{new_name}.ipynb"
-        
+
+        new_file = new_name if new_name.endswith(".ipynb") else f"{new_name}.ipynb"
+
         # Direct implementation of rename_notebook functionality
         jupyter_url = JUPYTER_URL
         headers = {}
@@ -2246,34 +3093,38 @@ async def notebook(operation: str, name: str = None, content: str = None,
             headers["Authorization"] = f"token {JUPYTER_TOKEN}"
 
         # Ensure old notebook name ends with .ipynb
-        old_file = notebook_name if notebook_name.endswith('.ipynb') else f"{notebook_name}.ipynb"
+        old_file = (
+            notebook_name
+            if notebook_name.endswith(".ipynb")
+            else f"{notebook_name}.ipynb"
+        )
 
         async with httpx.AsyncClient() as client:
             # PATCH to rename the notebook
             response = await client.patch(
                 f"{jupyter_url}/api/contents/{old_file}",
                 headers=headers,
-                json={"path": new_file}
+                json={"path": new_file},
             )
             response.raise_for_status()
-        
+
         return {
             "message": f"✏️ Renamed {name} → {new_file}",
             "old_name": name,
-            "new_name": new_file
+            "new_name": new_file,
         }
-    
+
     elif op == "delete":
         if not notebook_name:
             return {"error": "📝 Please provide notebook name"}
-        
+
         # Add confirmation check
         if not confirm:
             return {
                 "message": f"⚠️ Delete {name}? Call again with confirm=True to proceed",
-                "requires_confirmation": True
+                "requires_confirmation": True,
             }
-        
+
         # Direct implementation of delete_notebook functionality
         jupyter_url = JUPYTER_URL
         headers = {}
@@ -2281,26 +3132,27 @@ async def notebook(operation: str, name: str = None, content: str = None,
             headers["Authorization"] = f"token {JUPYTER_TOKEN}"
 
         # Ensure notebook name ends with .ipynb
-        notebook_file = notebook_name if notebook_name.endswith('.ipynb') else f"{notebook_name}.ipynb"
+        notebook_file = (
+            notebook_name
+            if notebook_name.endswith(".ipynb")
+            else f"{notebook_name}.ipynb"
+        )
 
         async with httpx.AsyncClient() as client:
             # DELETE the notebook
             response = await client.delete(
-                f"{jupyter_url}/api/contents/{notebook_file}",
-                headers=headers
+                f"{jupyter_url}/api/contents/{notebook_file}", headers=headers
             )
             response.raise_for_status()
-        
-        return {
-            "message": f"🗑️ Deleted {name}",
-            "deleted": True
-        }
-    
+
+        return {"message": f"🗑️ Deleted {name}", "deleted": True}
+
     else:
         return {
             "error": f"❓ Unknown operation '{operation}'",
-            "suggestion": "Try: create, add, read, list, search, run, stats, clear, copy, rename, or delete"
+            "suggestion": "Try: create, add, read, list, search, run, stats, clear, copy, rename, or delete",
         }
+
 
 @mcp.tool()
 async def list_notebooks() -> dict:
@@ -2328,10 +3180,7 @@ async def list_notebooks() -> dict:
 
     async with httpx.AsyncClient() as client:
         # GET the contents listing
-        response = await client.get(
-            f"{jupyter_url}/api/contents",
-            headers=headers
-        )
+        response = await client.get(f"{jupyter_url}/api/contents", headers=headers)
         response.raise_for_status()
 
         contents = response.json()["content"]
@@ -2344,9 +3193,8 @@ async def list_notebooks() -> dict:
 
     debug_print(f"Found {len(notebooks)} notebooks")
 
-    return {
-        "notebooks": notebooks
-    }
+    return {"notebooks": notebooks}
+
 
 @mcp.tool()
 async def execute_notebook_cell(notebook: str, cell: int) -> dict:
@@ -2385,14 +3233,13 @@ async def execute_notebook_cell(notebook: str, cell: int) -> dict:
         headers["Authorization"] = f"token {JUPYTER_TOKEN}"
 
     # Ensure notebook name ends with .ipynb
-    if not notebook.endswith('.ipynb'):
+    if not notebook.endswith(".ipynb"):
         notebook = f"{notebook}.ipynb"
 
     async with httpx.AsyncClient() as client:
         # GET the notebook content
         response = await client.get(
-            f"{jupyter_url}/api/contents/{notebook}",
-            headers=headers
+            f"{jupyter_url}/api/contents/{notebook}", headers=headers
         )
         response.raise_for_status()
 
@@ -2411,7 +3258,7 @@ async def execute_notebook_cell(notebook: str, cell: int) -> dict:
         if cell < 0 or cell >= len(content["cells"]):
             return {
                 "error": f"Cell index {cell} out of range. Notebook has {len(content['cells'])} cells.",
-                "output": ""
+                "output": "",
             }
 
         # Get the cell
@@ -2421,11 +3268,15 @@ async def execute_notebook_cell(notebook: str, cell: int) -> dict:
         if target_cell["cell_type"] != "code":
             return {
                 "error": f"Cell {cell} is a {target_cell['cell_type']} cell, not a code cell.",
-                "output": ""
+                "output": "",
             }
 
         # Get the code from the cell
-        code = "".join(target_cell["source"]) if isinstance(target_cell["source"], list) else target_cell["source"]
+        code = (
+            "".join(target_cell["source"])
+            if isinstance(target_cell["source"], list)
+            else target_cell["source"]
+        )
 
         # Execute the code with the notebook's kernel
         execution_result = await _execute_code(code, kernel_type)
@@ -2437,32 +3288,31 @@ async def execute_notebook_cell(notebook: str, cell: int) -> dict:
                 error_parts = execution_result["output"].split(":", 1)
                 ename = error_parts[0].strip()
                 evalue = error_parts[1].strip() if len(error_parts) > 1 else ""
-                target_cell["outputs"].append({
-                    "output_type": "error",
-                    "ename": ename,
-                    "evalue": evalue,
-                    "traceback": [execution_result["output"]]
-                })
+                target_cell["outputs"].append(
+                    {
+                        "output_type": "error",
+                        "ename": ename,
+                        "evalue": evalue,
+                        "traceback": [execution_result["output"]],
+                    }
+                )
             else:
-                target_cell["outputs"].append({
-                    "output_type": "stream",
-                    "name": "stdout",
-                    "text": execution_result["output"]
-                })
+                target_cell["outputs"].append(
+                    {
+                        "output_type": "stream",
+                        "name": "stdout",
+                        "text": execution_result["output"],
+                    }
+                )
 
         # Update execution count
         target_cell["execution_count"] = cell + 1
 
         # PUT the updated notebook back
-        update_data = {
-            "type": "notebook",
-            "content": content
-        }
+        update_data = {"type": "notebook", "content": content}
 
         response = await client.put(
-            f"{jupyter_url}/api/contents/{notebook}",
-            headers=headers,
-            json=update_data
+            f"{jupyter_url}/api/contents/{notebook}", headers=headers, json=update_data
         )
         response.raise_for_status()
 
@@ -2471,8 +3321,9 @@ async def execute_notebook_cell(notebook: str, cell: int) -> dict:
     return {
         "output": execution_result["output"],
         "error": execution_result["error"],
-        "cell": cell
+        "cell": cell,
     }
+
 
 @mcp.tool()
 async def add_markdown_to_notebook(notebook: str, text: str) -> dict:
@@ -2521,14 +3372,13 @@ async def add_markdown_to_notebook(notebook: str, text: str) -> dict:
         headers["Authorization"] = f"token {JUPYTER_TOKEN}"
 
     # Ensure notebook name ends with .ipynb
-    if not notebook.endswith('.ipynb'):
+    if not notebook.endswith(".ipynb"):
         notebook = f"{notebook}.ipynb"
 
     async with httpx.AsyncClient() as client:
         # GET the notebook content
         response = await client.get(
-            f"{jupyter_url}/api/contents/{notebook}",
-            headers=headers
+            f"{jupyter_url}/api/contents/{notebook}", headers=headers
         )
         response.raise_for_status()
 
@@ -2539,30 +3389,26 @@ async def add_markdown_to_notebook(notebook: str, text: str) -> dict:
         new_cell = {
             "cell_type": "markdown",
             "metadata": {},
-            "source": text if isinstance(text, list) else text.splitlines(keepends=True)
+            "source": text
+            if isinstance(text, list)
+            else text.splitlines(keepends=True),
         }
 
         # Append the new cell
         content["cells"].append(new_cell)
 
         # PUT the updated notebook back
-        update_data = {
-            "type": "notebook",
-            "content": content
-        }
+        update_data = {"type": "notebook", "content": content}
 
         response = await client.put(
-            f"{jupyter_url}/api/contents/{notebook}",
-            headers=headers,
-            json=update_data
+            f"{jupyter_url}/api/contents/{notebook}", headers=headers, json=update_data
         )
         response.raise_for_status()
 
     debug_print(f"Added markdown cell to notebook: {notebook}")
 
-    return {
-        "cell_number": len(content["cells"])
-    }
+    return {"cell_number": len(content["cells"])}
+
 
 @mcp.tool()
 async def delete_notebook(name: str) -> dict:
@@ -2595,23 +3441,20 @@ async def delete_notebook(name: str) -> dict:
         headers["Authorization"] = f"token {JUPYTER_TOKEN}"
 
     # Ensure notebook name ends with .ipynb
-    if not name.endswith('.ipynb'):
+    if not name.endswith(".ipynb"):
         name = f"{name}.ipynb"
 
     async with httpx.AsyncClient() as client:
         # DELETE the notebook
         response = await client.delete(
-            f"{jupyter_url}/api/contents/{name}",
-            headers=headers
+            f"{jupyter_url}/api/contents/{name}", headers=headers
         )
         response.raise_for_status()
 
     debug_print(f"Deleted notebook: {name}")
 
-    return {
-        "deleted": True,
-        "path": name
-    }
+    return {"deleted": True, "path": name}
+
 
 @mcp.tool()
 async def rename_notebook(old_name: str, new_name: str) -> dict:
@@ -2646,9 +3489,9 @@ async def rename_notebook(old_name: str, new_name: str) -> dict:
         headers["Authorization"] = f"token {JUPYTER_TOKEN}"
 
     # Ensure notebook names end with .ipynb
-    if not old_name.endswith('.ipynb'):
+    if not old_name.endswith(".ipynb"):
         old_name = f"{old_name}.ipynb"
-    if not new_name.endswith('.ipynb'):
+    if not new_name.endswith(".ipynb"):
         new_name = f"{new_name}.ipynb"
 
     async with httpx.AsyncClient() as client:
@@ -2656,17 +3499,14 @@ async def rename_notebook(old_name: str, new_name: str) -> dict:
         response = await client.patch(
             f"{jupyter_url}/api/contents/{old_name}",
             headers=headers,
-            json={"path": new_name}
+            json={"path": new_name},
         )
         response.raise_for_status()
 
     debug_print(f"Renamed notebook: {old_name} to {new_name}")
 
-    return {
-        "old_path": old_name,
-        "new_path": new_name,
-        "renamed": True
-    }
+    return {"old_path": old_name, "new_path": new_name, "renamed": True}
+
 
 @mcp.tool()
 async def search_notebooks(query: str) -> dict:
@@ -2732,10 +3572,7 @@ async def search_notebooks(query: str) -> dict:
 
     async with httpx.AsyncClient() as client:
         # First, get list of all notebooks
-        response = await client.get(
-            f"{jupyter_url}/api/contents",
-            headers=headers
-        )
+        response = await client.get(f"{jupyter_url}/api/contents", headers=headers)
         response.raise_for_status()
 
         contents = response.json()["content"]
@@ -2747,8 +3584,7 @@ async def search_notebooks(query: str) -> dict:
 
             # Get notebook content
             response = await client.get(
-                f"{jupyter_url}/api/contents/{nb_name}",
-                headers=headers
+                f"{jupyter_url}/api/contents/{nb_name}", headers=headers
             )
             response.raise_for_status()
 
@@ -2758,7 +3594,11 @@ async def search_notebooks(query: str) -> dict:
             # Search through cells
             for cell_idx, cell in enumerate(content["cells"]):
                 # Get cell source as string
-                cell_source = "".join(cell["source"]) if isinstance(cell["source"], list) else cell["source"]
+                cell_source = (
+                    "".join(cell["source"])
+                    if isinstance(cell["source"], list)
+                    else cell["source"]
+                )
 
                 # Case-insensitive search
                 if query.lower() in cell_source.lower():
@@ -2768,26 +3608,25 @@ async def search_notebooks(query: str) -> dict:
                         preview = preview[:150] + "..."
                     else:
                         # If short, show the whole cell
-                        first_newline = preview.find('\n')
+                        first_newline = preview.find("\n")
                         if first_newline > 0 and first_newline < 150:
                             preview = preview[:first_newline] + "..."
 
-                    matches.append({
-                        "notebook": nb_name,
-                        "cell": cell_idx,
-                        "cell_type": cell["cell_type"],
-                        "preview": preview
-                    })
+                    matches.append(
+                        {
+                            "notebook": nb_name,
+                            "cell": cell_idx,
+                            "cell_type": cell["cell_type"],
+                            "preview": preview,
+                        }
+                    )
 
                     debug_print(f"Found match in {nb_name}, cell {cell_idx}")
 
     debug_print(f"Search complete: found {len(matches)} matches for '{query}'")
 
-    return {
-        "query": query,
-        "matches": matches,
-        "total": len(matches)
-    }
+    return {"query": query, "matches": matches, "total": len(matches)}
+
 
 @mcp.tool()
 async def clear_notebook_outputs(name: str) -> dict:
@@ -2830,14 +3669,13 @@ async def clear_notebook_outputs(name: str) -> dict:
         headers["Authorization"] = f"token {JUPYTER_TOKEN}"
 
     # Ensure notebook name ends with .ipynb
-    if not name.endswith('.ipynb'):
+    if not name.endswith(".ipynb"):
         name = f"{name}.ipynb"
 
     async with httpx.AsyncClient() as client:
         # GET the notebook content
         response = await client.get(
-            f"{jupyter_url}/api/contents/{name}",
-            headers=headers
+            f"{jupyter_url}/api/contents/{name}", headers=headers
         )
         response.raise_for_status()
 
@@ -2856,15 +3694,10 @@ async def clear_notebook_outputs(name: str) -> dict:
                     cell["execution_count"] = None
 
         # PUT the updated notebook back
-        update_data = {
-            "type": "notebook",
-            "content": content
-        }
+        update_data = {"type": "notebook", "content": content}
 
         response = await client.put(
-            f"{jupyter_url}/api/contents/{name}",
-            headers=headers,
-            json=update_data
+            f"{jupyter_url}/api/contents/{name}", headers=headers, json=update_data
         )
         response.raise_for_status()
 
@@ -2873,8 +3706,9 @@ async def clear_notebook_outputs(name: str) -> dict:
     return {
         "notebook": name,
         "cleared": cleared_count,
-        "message": f"Cleared outputs from {cleared_count} cells"
+        "message": f"Cleared outputs from {cleared_count} cells",
     }
+
 
 @mcp.tool()
 async def run_all_cells(notebook: str) -> dict:
@@ -2917,14 +3751,13 @@ async def run_all_cells(notebook: str) -> dict:
         headers["Authorization"] = f"token {JUPYTER_TOKEN}"
 
     # Ensure notebook name ends with .ipynb
-    if not notebook.endswith('.ipynb'):
+    if not notebook.endswith(".ipynb"):
         notebook = f"{notebook}.ipynb"
 
     async with httpx.AsyncClient() as client:
         # GET the notebook content
         response = await client.get(
-            f"{jupyter_url}/api/contents/{notebook}",
-            headers=headers
+            f"{jupyter_url}/api/contents/{notebook}", headers=headers
         )
         response.raise_for_status()
 
@@ -2947,7 +3780,11 @@ async def run_all_cells(notebook: str) -> dict:
         for cell_idx, cell in enumerate(content["cells"]):
             if cell["cell_type"] == "code":
                 # Get the code from the cell
-                code = "".join(cell["source"]) if isinstance(cell["source"], list) else cell["source"]
+                code = (
+                    "".join(cell["source"])
+                    if isinstance(cell["source"], list)
+                    else cell["source"]
+                )
 
                 debug_print(f"Executing cell {cell_idx} in {notebook}")
 
@@ -2963,18 +3800,22 @@ async def run_all_cells(notebook: str) -> dict:
                         error_parts = execution_result["output"].split(":", 1)
                         ename = error_parts[0].strip()
                         evalue = error_parts[1].strip() if len(error_parts) > 1 else ""
-                        cell["outputs"].append({
-                            "output_type": "error",
-                            "ename": ename,
-                            "evalue": evalue,
-                            "traceback": [execution_result["output"]]
-                        })
+                        cell["outputs"].append(
+                            {
+                                "output_type": "error",
+                                "ename": ename,
+                                "evalue": evalue,
+                                "traceback": [execution_result["output"]],
+                            }
+                        )
                     else:
-                        cell["outputs"].append({
-                            "output_type": "stream",
-                            "name": "stdout",
-                            "text": execution_result["output"]
-                        })
+                        cell["outputs"].append(
+                            {
+                                "output_type": "stream",
+                                "name": "stdout",
+                                "text": execution_result["output"],
+                            }
+                        )
 
                 # Update execution count
                 cell["execution_count"] = execution_number
@@ -2982,26 +3823,24 @@ async def run_all_cells(notebook: str) -> dict:
                 executed_count += 1
 
         # PUT the updated notebook back
-        update_data = {
-            "type": "notebook",
-            "content": content
-        }
+        update_data = {"type": "notebook", "content": content}
 
         response = await client.put(
-            f"{jupyter_url}/api/contents/{notebook}",
-            headers=headers,
-            json=update_data
+            f"{jupyter_url}/api/contents/{notebook}", headers=headers, json=update_data
         )
         response.raise_for_status()
 
-    debug_print(f"Executed {executed_count} cells in notebook: {notebook} ({error_count} errors)")
+    debug_print(
+        f"Executed {executed_count} cells in notebook: {notebook} ({error_count} errors)"
+    )
 
     return {
         "notebook": notebook,
         "executed": executed_count,
         "errors": error_count,
-        "message": f"Executed {executed_count} cells ({error_count} errors)"
+        "message": f"Executed {executed_count} cells ({error_count} errors)",
     }
+
 
 @mcp.tool()
 async def copy_notebook(source: str, destination: str) -> dict:
@@ -3044,32 +3883,26 @@ async def copy_notebook(source: str, destination: str) -> dict:
         headers["Authorization"] = f"token {JUPYTER_TOKEN}"
 
     # Ensure notebook names end with .ipynb
-    if not source.endswith('.ipynb'):
+    if not source.endswith(".ipynb"):
         source = f"{source}.ipynb"
-    if not destination.endswith('.ipynb'):
+    if not destination.endswith(".ipynb"):
         destination = f"{destination}.ipynb"
 
     async with httpx.AsyncClient() as client:
         # GET the source notebook content
         response = await client.get(
-            f"{jupyter_url}/api/contents/{source}",
-            headers=headers
+            f"{jupyter_url}/api/contents/{source}", headers=headers
         )
         response.raise_for_status()
 
         notebook_data = response.json()
 
         # Create copy data with the new destination
-        copy_data = {
-            "type": "notebook",
-            "content": notebook_data["content"]
-        }
+        copy_data = {"type": "notebook", "content": notebook_data["content"]}
 
         # PUT to create the destination notebook
         response = await client.put(
-            f"{jupyter_url}/api/contents/{destination}",
-            headers=headers,
-            json=copy_data
+            f"{jupyter_url}/api/contents/{destination}", headers=headers, json=copy_data
         )
         response.raise_for_status()
 
@@ -3079,8 +3912,9 @@ async def copy_notebook(source: str, destination: str) -> dict:
         "source": source,
         "destination": destination,
         "copied": True,
-        "message": f"Successfully copied {source} to {destination}"
+        "message": f"Successfully copied {source} to {destination}",
     }
+
 
 @mcp.tool()
 async def get_notebook_stats(name: str) -> dict:
@@ -3140,14 +3974,13 @@ async def get_notebook_stats(name: str) -> dict:
         headers["Authorization"] = f"token {JUPYTER_TOKEN}"
 
     # Ensure notebook name ends with .ipynb
-    if not name.endswith('.ipynb'):
+    if not name.endswith(".ipynb"):
         name = f"{name}.ipynb"
 
     async with httpx.AsyncClient() as client:
         # GET the notebook content
         response = await client.get(
-            f"{jupyter_url}/api/contents/{name}",
-            headers=headers
+            f"{jupyter_url}/api/contents/{name}", headers=headers
         )
         response.raise_for_status()
 
@@ -3169,7 +4002,7 @@ async def get_notebook_stats(name: str) -> dict:
             if isinstance(cell_source, list):
                 line_count = len(cell_source)
             else:
-                line_count = cell_source.count('\n') + 1 if cell_source else 0
+                line_count = cell_source.count("\n") + 1 if cell_source else 0
 
             if cell["cell_type"] == "code":
                 code_cells += 1
@@ -3188,11 +4021,15 @@ async def get_notebook_stats(name: str) -> dict:
         kernel_name = "python3"  # default
         if "metadata" in content and "kernelspec" in content["metadata"]:
             kernel_name = content["metadata"]["kernelspec"].get("name", "python3")
-            kernel_display = content["metadata"]["kernelspec"].get("display_name", kernel_name)
+            kernel_display = content["metadata"]["kernelspec"].get(
+                "display_name", kernel_name
+            )
         else:
             kernel_display = kernel_name
 
-    debug_print(f"Stats for {name}: {total_cells} cells, {total_code_lines} lines of code")
+    debug_print(
+        f"Stats for {name}: {total_cells} cells, {total_code_lines} lines of code"
+    )
 
     return {
         "notebook": name,
@@ -3206,8 +4043,9 @@ async def get_notebook_stats(name: str) -> dict:
         "cells_with_outputs": cells_with_outputs,
         "total_outputs": total_outputs,
         "kernel": kernel_name,
-        "kernel_display_name": kernel_display
+        "kernel_display_name": kernel_display,
     }
+
 
 @mcp.tool()
 async def stream_execute(code: str, kernel: str = "python3") -> dict:
@@ -3298,7 +4136,9 @@ async def stream_execute(code: str, kernel: str = "python3") -> dict:
 
     # Map user-friendly kernel type to actual kernel spec name
     kernel_spec_name = _get_kernel_spec_name(kernel)
-    debug_print(f"Stream execute: Mapping kernel '{kernel}' to spec name '{kernel_spec_name}'")
+    debug_print(
+        f"Stream execute: Mapping kernel '{kernel}' to spec name '{kernel_spec_name}'"
+    )
 
     # Use configured Jupyter URLs
     jupyter_url = JUPYTER_URL
@@ -3316,48 +4156,66 @@ async def stream_execute(code: str, kernel: str = "python3") -> dict:
             available_kernels = list(kernels_data.get("kernelspecs", {}).keys())
 
             if kernel_spec_name not in available_kernels:
-                debug_print(f"Warning: Kernel spec '{kernel_spec_name}' not found in available kernels: {available_kernels}")
+                debug_print(
+                    f"Warning: Kernel spec '{kernel_spec_name}' not found in available kernels: {available_kernels}"
+                )
                 debug_print("Attempting to create anyway...")
 
             try:
                 # Create kernel with specific kernel spec
                 kernel_data = {"name": kernel_spec_name}
-                debug_print(f"Attempting to create {kernel} kernel (spec: {kernel_spec_name})...")
+                debug_print(
+                    f"Attempting to create {kernel} kernel (spec: {kernel_spec_name})..."
+                )
                 response = await client.post(
-                    f"{jupyter_url}/api/kernels",
-                    headers=headers,
-                    json=kernel_data
+                    f"{jupyter_url}/api/kernels", headers=headers, json=kernel_data
                 )
                 response.raise_for_status()
             except httpx.HTTPStatusError as e:
-                debug_print(f"Failed to create {kernel} kernel (spec: {kernel_spec_name}): {e.response.status_code} {e.response.reason_phrase}")
+                debug_print(
+                    f"Failed to create {kernel} kernel (spec: {kernel_spec_name}): {e.response.status_code} {e.response.reason_phrase}"
+                )
                 if e.response.status_code == 500:
-                    debug_print(f"Kernel spec '{kernel_spec_name}' may not be available in Jupyter.")
+                    debug_print(
+                        f"Kernel spec '{kernel_spec_name}' may not be available in Jupyter."
+                    )
                     debug_print(f"Available kernels: {available_kernels}")
                     debug_print(f"Response text: {e.response.text}")
-                raise Exception(f"Cannot create {kernel} kernel (spec: {kernel_spec_name}): {e.response.status_code} {e.response.reason_phrase}. Available kernels: {available_kernels}")
+                raise Exception(
+                    f"Cannot create {kernel} kernel (spec: {kernel_spec_name}): {e.response.status_code} {e.response.reason_phrase}. Available kernels: {available_kernels}"
+                )
             except Exception as e:
-                debug_print(f"Error creating {kernel} kernel (spec: {kernel_spec_name}): {e}")
-                raise Exception(f"Failed to create {kernel} kernel (spec: {kernel_spec_name}): {str(e)}")
+                debug_print(
+                    f"Error creating {kernel} kernel (spec: {kernel_spec_name}): {e}"
+                )
+                raise Exception(
+                    f"Failed to create {kernel} kernel (spec: {kernel_spec_name}): {str(e)}"
+                )
 
             kernel_info = response.json()
             kernel_session = str(uuid.uuid4())
-            KERNEL_IDS[kernel] = {
-                "id": kernel_info["id"],
-                "session": kernel_session
-            }
+            KERNEL_IDS[kernel] = {"id": kernel_info["id"], "session": kernel_session}
 
-            debug_print(f"Created {kernel} kernel: {KERNEL_IDS[kernel]['id']} with session: {KERNEL_IDS[kernel]['session'][:8]}...")
+            debug_print(
+                f"Created {kernel} kernel: {KERNEL_IDS[kernel]['id']} with session: {KERNEL_IDS[kernel]['session'][:8]}..."
+            )
 
             # Add kernel initialization check for Deno and Rust
             if kernel in ["deno", "rust"]:
                 debug_print(f"Waiting for {kernel} kernel to initialize...")
-                ready = await _ensure_kernel_ready(KERNEL_IDS[kernel]["id"], KERNEL_IDS[kernel]["session"], ws_url, headers)
+                ready = await _ensure_kernel_ready(
+                    KERNEL_IDS[kernel]["id"],
+                    KERNEL_IDS[kernel]["session"],
+                    ws_url,
+                    headers,
+                )
                 if not ready:
                     debug_print(f"Warning: {kernel} kernel may not be fully ready")
                 # Give it a bit more time for runtime initialization
                 if kernel == "rust":
-                    await asyncio.sleep(2.0)  # Rust needs more time for compilation environment
+                    await asyncio.sleep(
+                        2.0
+                    )  # Rust needs more time for compilation environment
                 else:
                     await asyncio.sleep(1.0)
     else:
@@ -3368,10 +4226,12 @@ async def stream_execute(code: str, kernel: str = "python3") -> dict:
             async with httpx.AsyncClient() as client:
                 response = await client.get(
                     f"{jupyter_url}/api/kernels/{KERNEL_IDS[kernel]['id']}",
-                    headers=headers
+                    headers=headers,
                 )
                 if response.status_code == 404:
-                    debug_print(f"Kernel {KERNEL_IDS[kernel]['id']} no longer exists, removing from cache")
+                    debug_print(
+                        f"Kernel {KERNEL_IDS[kernel]['id']} no longer exists, removing from cache"
+                    )
                     del KERNEL_IDS[kernel]
                     # Recursively call to create a new kernel
                     return await stream_execute(code, kernel)
@@ -3392,7 +4252,8 @@ async def stream_execute(code: str, kernel: str = "python3") -> dict:
     completed = False
     error_occurred = False
 
-    async with websockets.connect(ws_endpoint, subprotocols=['kernel.v5.2']) as websocket:
+    websocket = await _connect_with_backoff(ws_endpoint, subprotocols=["kernel.v5.2"])
+    async with websocket:
         # Create execute_request message
         msg_id = str(uuid.uuid4())
         execute_msg = {
@@ -3402,7 +4263,7 @@ async def stream_execute(code: str, kernel: str = "python3") -> dict:
                 "session": KERNEL_IDS[kernel]["session"],
                 "username": "mcp",
                 "version": "5.2",
-                "date": datetime.utcnow().isoformat() + "Z"
+                "date": datetime.utcnow().isoformat() + "Z",
             },
             "parent_header": {},
             "metadata": {},
@@ -3411,9 +4272,9 @@ async def stream_execute(code: str, kernel: str = "python3") -> dict:
                 "silent": False,
                 "store_history": True,
                 "user_expressions": {},
-                "allow_stdin": False
+                "allow_stdin": False,
             },
-            "channel": "shell"
+            "channel": "shell",
         }
 
         # Send the execute request
@@ -3445,12 +4306,14 @@ async def stream_execute(code: str, kernel: str = "python3") -> dict:
                     text = content.get("text", "")
                     stream_name = content.get("name", "stdout")
                     if text:
-                        outputs.append({
-                            "type": "stream",
-                            "stream": stream_name,
-                            "text": text,
-                            "timestamp": timestamp
-                        })
+                        outputs.append(
+                            {
+                                "type": "stream",
+                                "stream": stream_name,
+                                "text": text,
+                                "timestamp": timestamp,
+                            }
+                        )
                         debug_print(f"  Stream output at {timestamp}: {text.strip()}")
 
                 # Check for display data
@@ -3458,11 +4321,13 @@ async def stream_execute(code: str, kernel: str = "python3") -> dict:
                     content = msg_data.get("content", {})
                     data = content.get("data", {})
                     if "text/plain" in data:
-                        outputs.append({
-                            "type": "display_data",
-                            "text": data["text/plain"],
-                            "timestamp": timestamp
-                        })
+                        outputs.append(
+                            {
+                                "type": "display_data",
+                                "text": data["text/plain"],
+                                "timestamp": timestamp,
+                            }
+                        )
                         debug_print(f"  Display data at {timestamp}")
 
                 # Check for execute result
@@ -3470,11 +4335,13 @@ async def stream_execute(code: str, kernel: str = "python3") -> dict:
                     content = msg_data.get("content", {})
                     data = content.get("data", {})
                     if "text/plain" in data:
-                        outputs.append({
-                            "type": "execute_result",
-                            "text": data["text/plain"],
-                            "timestamp": timestamp
-                        })
+                        outputs.append(
+                            {
+                                "type": "execute_result",
+                                "text": data["text/plain"],
+                                "timestamp": timestamp,
+                            }
+                        )
                         debug_print(f"  Execute result at {timestamp}")
 
                 # Check for errors
@@ -3482,12 +4349,14 @@ async def stream_execute(code: str, kernel: str = "python3") -> dict:
                     content = msg_data.get("content", {})
                     ename = content.get("ename", "Error")
                     evalue = content.get("evalue", "")
-                    outputs.append({
-                        "type": "error",
-                        "error_name": ename,
-                        "error_value": evalue,
-                        "timestamp": timestamp
-                    })
+                    outputs.append(
+                        {
+                            "type": "error",
+                            "error_name": ename,
+                            "error_value": evalue,
+                            "timestamp": timestamp,
+                        }
+                    )
                     error_occurred = True
                     debug_print(f"  Error at {timestamp}: {ename}: {evalue}")
 
@@ -3499,19 +4368,22 @@ async def stream_execute(code: str, kernel: str = "python3") -> dict:
         except Exception as e:
             debug_print(f"Error during streaming execution: {e}")
             error_occurred = True
-            outputs.append({
-                "type": "error",
-                "error_name": "StreamingError",
-                "error_value": str(e),
-                "timestamp": datetime.utcnow().isoformat()
-            })
+            outputs.append(
+                {
+                    "type": "error",
+                    "error_name": "StreamingError",
+                    "error_value": str(e),
+                    "timestamp": datetime.utcnow().isoformat(),
+                }
+            )
 
     return {
         "outputs": outputs,
         "completed": completed,
         "error": error_occurred,
-        "total_outputs": len(outputs)
+        "total_outputs": len(outputs),
     }
+
 
 if __name__ == "__main__":
     import sys
@@ -3520,8 +4392,8 @@ if __name__ == "__main__":
     # Set up logging for debugging
     logging.basicConfig(
         level=logging.DEBUG,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        stream=sys.stderr
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        stream=sys.stderr,
     )
 
     try:
