@@ -538,13 +538,35 @@ async def compute(code: str, kernel: str = "python3", mode: str = "auto") -> dic
             # For now, fall back to regular execution for simplicity
             # TODO: Implement inline streaming logic later
             result = await _execute_code(code, actual_kernel)
-            return {
+            # Still need to add error suggestions for streaming path
+            enhanced_result = {
                 "output": result.get("output", ""),
                 "error": result.get("error", False),
                 "streamed": False,
                 "kernel": actual_kernel,
                 "note": "Auto-streaming detected but using regular execution for compatibility"
             }
+            
+            # Add helpful suggestions on error (streaming path)
+            if result.get("error"):
+                output = result.get("output", "").strip()
+                error_msg = output.lower()
+                import re
+                
+                if "nameerror" in error_msg:
+                    # Match patterns like: NameError: name 'xyz' is not defined
+                    match = re.search(r"name ['\"](\w+)['\"]", output)
+                    var_name = match.group(1) if match else "variable"
+                    enhanced_result["suggestion"] = f"💡 '{var_name}' is not defined. Did you run previous cells?"
+                elif "modulenotfounderror" in error_msg:
+                    # Match patterns like: No module named 'xyz'
+                    match = re.search(r"module named ['\"](\S+)['\"]", output)
+                    module = match.group(1) if match else "module"
+                    enhanced_result["suggestion"] = f"💡 Try: !pip install {module}"
+                elif "syntaxerror" in error_msg:
+                    enhanced_result["suggestion"] = "💡 Check for missing colons, parentheses, or indentation"
+            
+            return enhanced_result
         except Exception as e:
             return {
                 "output": f"❌ Error during execution: {str(e)}",
@@ -569,11 +591,17 @@ async def compute(code: str, kernel: str = "python3", mode: str = "auto") -> dic
     # Add helpful suggestions on error
     if result.get("error"):
         error_msg = output.lower()
+        import re
+        
         if "nameerror" in error_msg:
-            var_name = output.split("'")[1] if "'" in output else "variable"
+            # Match patterns like: NameError: name 'xyz' is not defined
+            match = re.search(r"name ['\"](\w+)['\"]", output)
+            var_name = match.group(1) if match else "variable"
             enhanced_result["suggestion"] = f"💡 '{var_name}' is not defined. Did you run previous cells?"
         elif "modulenotfounderror" in error_msg:
-            module = output.split("'")[1] if "'" in output else "module"
+            # Match patterns like: No module named 'xyz'
+            match = re.search(r"module named ['\"](\S+)['\"]", output)
+            module = match.group(1) if match else "module"
             enhanced_result["suggestion"] = f"💡 Try: !pip install {module}"
         elif "syntaxerror" in error_msg:
             enhanced_result["suggestion"] = "💡 Check for missing colons, parentheses, or indentation"
@@ -969,12 +997,33 @@ async def workspace() -> dict:
         for kernel_name in KERNEL_IDS:
             # Quick check if kernel has variables
             try:
-                vars_result = await vars(kernel_name)
-                var_count = len([line for line in vars_result.get("raw_output", "").split('\n') if line.strip()])
-                if var_count > 0:
-                    workspace_info.append(f"  • {kernel_name}: {var_count} variables defined")
+                # Call the vars function directly instead of as MCP tool
+                if kernel_name == "python3":
+                    inspect_code = """
+import sys
+import types
+vars_info = []
+for name, obj in list(globals().items()):
+    if not name.startswith('_') and name not in ['In', 'Out', 'exit', 'quit', 'get_ipython']:
+        if isinstance(obj, types.ModuleType) or isinstance(obj, types.BuiltinFunctionType):
+            continue
+        vars_info.append(name)
+print(len(vars_info))
+"""
                 else:
-                    workspace_info.append(f"  • {kernel_name}: running (no variables)")
+                    # For other kernels, just check if kernel is responsive
+                    inspect_code = "println(length(names(Main)))" if kernel_name == "julia" else "length(ls())"
+                
+                result = await _execute_code(inspect_code, kernel_name)
+                if not result.get("error"):
+                    output_clean = result.get("output", "0").strip()
+                    var_count = int(output_clean) if output_clean.isdigit() else 0
+                    if var_count > 0:
+                        workspace_info.append(f"  • {kernel_name}: {var_count} variables defined")
+                    else:
+                        workspace_info.append(f"  • {kernel_name}: running (no variables)")
+                else:
+                    workspace_info.append(f"  • {kernel_name}: active")
             except Exception:
                 workspace_info.append(f"  • {kernel_name}: active")
     else:
@@ -1576,48 +1625,58 @@ async def notebook(operation: str, name: str = None, content: str = None,
     if op == "create":
         if not notebook_name:
             return {"error": "📝 Please provide a notebook name"}
-        # Create notebook directly via Jupyter API
-        jupyter_url = JUPYTER_URL
-        headers = {}
-        if JUPYTER_TOKEN:
-            headers["Authorization"] = f"token {JUPYTER_TOKEN}"
-
+        
+        # Create notebook directly on filesystem for reliability
+        import json
+        import os
+        import re
+        
+        # Sanitize notebook name - remove any potentially dangerous characters
+        safe_name = re.sub(r'[^a-zA-Z0-9_-]', '_', notebook_name)
+        safe_name = safe_name[:100]  # Limit length to prevent filesystem issues
+        
+        # Ensure we're writing to current directory only
+        filename = os.path.basename(f"{safe_name}.ipynb")
+        filepath = os.path.join(os.getcwd(), filename)
+        
+        # Check if file already exists
+        if os.path.exists(filepath):
+            return {
+                "error": f"📓 Notebook '{filename}' already exists. Choose a different name or delete the existing notebook.",
+                "path": filename
+            }
+        
         # Get kernel specification
         kernel_spec = _get_kernel_spec(kernel)
 
         # Create notebook content
         notebook_content = {
-            "type": "notebook",
-            "content": {
-                "cells": [],
-                "metadata": {
-                    "kernelspec": kernel_spec
-                },
-                "nbformat": 4,
-                "nbformat_minor": 5
+            "cells": [],
+            "metadata": {
+                "kernelspec": kernel_spec,
+                "language_info": {
+                    "name": kernel_spec.get("language", "python")
+                }
+            },
+            "nbformat": 4,
+            "nbformat_minor": 5
+        }
+
+        # Write notebook to filesystem
+        try:
+            with open(filepath, 'w') as f:
+                json.dump(notebook_content, f, indent=2)
+            
+            return {
+                "message": f"📓 Created notebook: {filename}",
+                "path": filename,
+                "kernel": kernel
             }
-        }
-
-        # PUT to create the notebook
-        async with httpx.AsyncClient() as client:
-            response = await client.put(
-                f"{jupyter_url}/api/contents/{notebook_name}.ipynb",
-                headers=headers,
-                json=notebook_content
-            )
-            response.raise_for_status()
-
-        result = {
-            "path": f"{notebook_name}.ipynb",
-            "kernel": kernel,
-            "kernel_spec": kernel_spec,
-            "created": True
-        }
-        return {
-            "message": f"📓 Created notebook: {name}",
-            "path": result["path"],
-            "kernel": kernel
-        }
+        except Exception as e:
+            return {
+                "error": f"❌ Failed to create notebook: {str(e)}",
+                "path": filename
+            }
     
     elif op == "add":
         if not notebook_name or not content:
@@ -1625,117 +1684,86 @@ async def notebook(operation: str, name: str = None, content: str = None,
         
         cell_type = cell_type.lower()
         
-        # Direct implementation of add functionality
-        jupyter_url = JUPYTER_URL
-        headers = {}
-        if JUPYTER_TOKEN:
-            headers["Authorization"] = f"token {JUPYTER_TOKEN}"
-
+        # Direct filesystem implementation for reliability
+        import json
+        import os
+        import re
+        
+        # Sanitize notebook name
+        safe_name = re.sub(r'[^a-zA-Z0-9_-]', '_', notebook_name.replace('.ipynb', ''))
+        safe_name = safe_name[:100]
+        
         # Ensure notebook name ends with .ipynb
-        notebook_file = notebook_name if notebook_name.endswith('.ipynb') else f"{notebook_name}.ipynb"
+        notebook_file = f"{safe_name}.ipynb"
+        filepath = os.path.join(os.getcwd(), notebook_file)
 
-        async with httpx.AsyncClient() as client:
-            # GET the notebook content
-            response = await client.get(
-                f"{jupyter_url}/api/contents/{notebook_file}",
-                headers=headers
-            )
-            response.raise_for_status()
+        try:
+            # Read existing notebook
+            with open(filepath, 'r') as f:
+                notebook_content = json.load(f)
+        except FileNotFoundError:
+            return {"error": f"📝 Notebook {notebook_file} not found. Create it first with notebook('create', '{safe_name}')"}
 
-            notebook_data = response.json()
-            notebook_content = notebook_data["content"]
-
-            if cell_type == "markdown" or cell_type == "md":
-                # Create new markdown cell
-                new_cell = {
-                    "cell_type": "markdown",
-                    "metadata": {},
-                    "source": content if isinstance(content, list) else content.splitlines(keepends=True)
-                }
-                # Append the new cell
-                notebook_content["cells"].append(new_cell)
-                cell_number = len(notebook_content["cells"])
-
-                # PUT the updated notebook back
-                update_data = {
-                    "type": "notebook",
-                    "content": notebook_content
-                }
-
-                response = await client.put(
-                    f"{jupyter_url}/api/contents/{notebook_file}",
-                    headers=headers,
-                    json=update_data
-                )
-                response.raise_for_status()
-
-                return {
-                    "message": f"📝 Added markdown cell #{cell_number} to {name}",
-                    "cell_number": cell_number
-                }
-            else:
-                # Code cell - get kernel from notebook metadata
-                kernel_spec_name = "python3"  # default
-                if "metadata" in notebook_content and "kernelspec" in notebook_content["metadata"]:
-                    kernel_spec_name = notebook_content["metadata"]["kernelspec"].get("name", "python3")
-
-                # Convert kernel spec name to our kernel type
-                kernel_type = _get_kernel_type_from_spec(kernel_spec_name)
-
-                # Execute the code
-                execution_result = await _execute_code(content, kernel_type)
-
-                # Create new code cell
-                new_cell = {
-                    "cell_type": "code",
-                    "metadata": {},
-                    "source": content if isinstance(content, list) else content.splitlines(keepends=True),
-                    "outputs": [],
-                    "execution_count": len(notebook_content["cells"]) + 1
-                }
-
-                # Add output if there was any
-                if execution_result["output"]:
-                    if execution_result["error"]:
-                        error_parts = execution_result["output"].split(":", 1)
-                        ename = error_parts[0].strip()
-                        evalue = error_parts[1].strip() if len(error_parts) > 1 else ""
-                        new_cell["outputs"].append({
-                            "output_type": "error",
-                            "ename": ename,
-                            "evalue": evalue,
-                            "traceback": [execution_result["output"]]
-                        })
-                    else:
-                        new_cell["outputs"].append({
-                            "output_type": "stream",
-                            "name": "stdout",
-                            "text": execution_result["output"]
-                        })
-
-                # Append the new cell
-                notebook_content["cells"].append(new_cell)
-                cell_number = len(notebook_content["cells"])
-
-                # PUT the updated notebook back
-                update_data = {
-                    "type": "notebook",
-                    "content": notebook_content
-                }
-
-                response = await client.put(
-                    f"{jupyter_url}/api/contents/{notebook_file}",
-                    headers=headers,
-                    json=update_data
-                )
-                response.raise_for_status()
-
-                output_preview = execution_result["output"][:100] + "..." if len(execution_result["output"]) > 100 else execution_result["output"]
-                return {
-                    "message": f"✅ Added code cell #{cell_number} to {name}",
-                    "cell_number": cell_number,
-                    "output": output_preview if output_preview.strip() else "No output"
-                }
+        if cell_type == "markdown" or cell_type == "md":
+            # Create new markdown cell
+            new_cell = {
+                "cell_type": "markdown",
+                "metadata": {},
+                "source": content.splitlines(keepends=True) if isinstance(content, str) else content
+            }
+        else:
+            # Code cell - execute and capture output
+            kernel_spec_name = "python3"  # default
+            if "metadata" in notebook_content and "kernelspec" in notebook_content["metadata"]:
+                kernel_spec_name = notebook_content["metadata"]["kernelspec"].get("name", "python3")
+            
+            # Convert kernel spec name to our kernel type
+            kernel_type = _get_kernel_type_from_spec(kernel_spec_name)
+            
+            # Execute the code
+            execution_result = await _execute_code(content, kernel_type)
+            
+            # Create new code cell
+            new_cell = {
+                "cell_type": "code",
+                "metadata": {},
+                "source": content.splitlines(keepends=True) if isinstance(content, str) else content,
+                "outputs": [],
+                "execution_count": len(notebook_content["cells"]) + 1
+            }
+            
+            # Add output if there was any
+            if execution_result.get("output"):
+                if execution_result.get("error"):
+                    new_cell["outputs"].append({
+                        "output_type": "error",
+                        "ename": "Error",
+                        "evalue": execution_result["output"],
+                        "traceback": [execution_result["output"]]
+                    })
+                else:
+                    new_cell["outputs"].append({
+                        "output_type": "stream",
+                        "name": "stdout",
+                        "text": execution_result["output"]
+                    })
+        
+        # Append the new cell
+        notebook_content["cells"].append(new_cell)
+        cell_number = len(notebook_content["cells"])
+        
+        # Write updated notebook back to filesystem
+        try:
+            with open(filepath, 'w') as f:
+                json.dump(notebook_content, f, indent=2)
+            
+            cell_type_emoji = "📝" if cell_type in ["markdown", "md"] else "✅"
+            return {
+                "message": f"{cell_type_emoji} Added {cell_type} cell #{cell_number} to {notebook_file}",
+                "cell_number": cell_number
+            }
+        except Exception as e:
+            return {"error": f"❌ Failed to save notebook: {str(e)}"}
     
     elif op == "read":
         if not notebook_name:
