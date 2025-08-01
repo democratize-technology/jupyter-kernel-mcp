@@ -30,6 +30,7 @@ import uuid
 import asyncio
 import sys
 from datetime import datetime
+import re
 
 
 # Debug mode - set via environment variable
@@ -1282,6 +1283,7 @@ import sys
 import types
 import numpy as np
 import pandas as pd
+import re
 
 def get_size_mb(obj):
     try:
@@ -1332,7 +1334,36 @@ for name, obj in list(globals().items()):
         functions.append((name, type_name))
     else:
         # Format value for display
-        if isinstance(obj, str) and ('key' in name.lower() or 'token' in name.lower() or 'secret' in name.lower()):
+        # Comprehensive credential detection patterns
+        sensitive_patterns = [
+            'key', 'token', 'secret', 'password', 'passwd', 'pwd', 
+            'auth', 'credential', 'api', 'private', 'priv',
+            'access', 'bearer', 'jwt', 'oauth', 'session',
+            'cookie', 'csrf', 'xsrf', 'hash', 'salt',
+            'signature', 'sig', 'cert', 'certificate', 'pem',
+            'rsa', 'dsa', 'ecdsa', 'pub', 'ssh'
+        ]
+        
+        name_lower = name.lower()
+        is_sensitive_name = any(pattern in name_lower for pattern in sensitive_patterns)
+        
+        # Also check for patterns like KEY_2, SECRET_SAUCE, etc
+        is_sensitive_pattern = bool(re.match(r'.*(_|-)?(key|token|secret|pass|auth|api|cert|sig)(_|-)?\d*$', name_lower, re.IGNORECASE))
+        
+        # Check value content for sensitive patterns (if string)
+        is_sensitive_value = False
+        if isinstance(obj, str) and len(obj) > 8:
+            # Common token/key patterns
+            if re.match(r'^[A-Za-z0-9+/=_-]{20,}$', obj):  # Base64-like tokens
+                is_sensitive_value = True
+            elif re.match(r'^[a-f0-9]{32,}$', obj.lower()):  # Hex tokens
+                is_sensitive_value = True
+            elif obj.startswith(('sk_', 'pk_', 'api_', 'pat_', 'ghp_', 'ghs_', 'glpat-')):  # Common API key prefixes
+                is_sensitive_value = True
+            elif 'BEGIN' in obj and 'KEY' in obj:  # PEM format keys
+                is_sensitive_value = True
+        
+        if isinstance(obj, str) and (is_sensitive_name or is_sensitive_pattern or is_sensitive_value):
             value_str = "(hidden)"
         elif isinstance(obj, (int, float, bool)):
             value_str = str(obj)
@@ -1975,6 +2006,57 @@ async def reset(kernel: str = None) -> dict:
         return {"message": "No kernels were deleted"}
 
 
+def validate_notebook_name(name: str) -> str:
+    """
+    Validate and sanitize notebook names to prevent path traversal attacks.
+    
+    Args:
+        name: The proposed notebook name
+        
+    Returns:
+        str: Sanitized notebook name
+        
+    Raises:
+        ValueError: If the name is invalid or potentially malicious
+    """
+    # Remove any .ipynb extension if provided
+    if name.endswith('.ipynb'):
+        name = name[:-6]
+    
+    # Check for empty or whitespace-only names
+    if not name or not name.strip():
+        raise ValueError("Notebook name cannot be empty")
+    
+    # Check for path traversal attempts
+    if any(char in name for char in ['..', '/', '\\', '~']):
+        raise ValueError("Notebook name cannot contain path traversal characters (.. / \\ ~)")
+    
+    # Check for absolute paths
+    if name.startswith(('/', '\\')) or (len(name) > 1 and name[1] == ':'):
+        raise ValueError("Notebook name cannot be an absolute path")
+    
+    # Validate characters - allow alphanumeric, dash, underscore, space
+    if not re.match(r'^[a-zA-Z0-9_\- ]+$', name):
+        raise ValueError("Notebook name can only contain letters, numbers, spaces, dashes, and underscores")
+    
+    # Limit length
+    if len(name) > 255:
+        raise ValueError("Notebook name is too long (max 255 characters)")
+    
+    # Check for reserved names that might cause issues
+    reserved_names = ['CON', 'PRN', 'AUX', 'NUL', 'COM1', 'COM2', 'COM3', 'COM4',
+                      'COM5', 'COM6', 'COM7', 'COM8', 'COM9', 'LPT1', 'LPT2', 
+                      'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9',
+                      '.', '..']
+    if name.upper() in reserved_names or name.upper().startswith(tuple(n + '.' for n in reserved_names if n not in ['.', '..'])):
+        raise ValueError(f"'{name}' is a reserved name and cannot be used")
+    
+    # Sanitize spaces to underscores for better compatibility
+    name = name.strip().replace(' ', '_')
+    
+    return name
+
+
 @mcp.tool()
 async def create_notebook(name: str, kernel: str = "python3") -> dict:
     """
@@ -2025,6 +2107,12 @@ async def create_notebook(name: str, kernel: str = "python3") -> dict:
         - Notebooks are created in the current working directory
         - Use meaningful names with underscores or hyphens
     """
+
+    # Validate and sanitize the notebook name
+    try:
+        name = validate_notebook_name(name)
+    except ValueError as e:
+        return {"error": True, "message": str(e)}
 
     # Use configured Jupyter URL
     jupyter_url = JUPYTER_URL
@@ -3427,6 +3515,12 @@ async def delete_notebook(name: str) -> dict:
         to create a backup before deleting.
     """
 
+    # Validate and sanitize the notebook name
+    try:
+        name = validate_notebook_name(name)
+    except ValueError as e:
+        return {"error": True, "message": str(e), "deleted": False}
+
     # Use configured Jupyter URL
     jupyter_url = JUPYTER_URL
 
@@ -3474,6 +3568,13 @@ async def rename_notebook(old_name: str, new_name: str) -> dict:
             "renamed": true
         }
     """
+
+    # Validate and sanitize both notebook names
+    try:
+        old_name = validate_notebook_name(old_name)
+        new_name = validate_notebook_name(new_name)
+    except ValueError as e:
+        return {"error": True, "message": str(e), "renamed": False}
 
     # Use configured Jupyter URL
     jupyter_url = JUPYTER_URL
