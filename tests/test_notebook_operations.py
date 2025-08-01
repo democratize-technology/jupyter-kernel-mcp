@@ -423,3 +423,119 @@ class TestNotebookOperations:
                 assert result["markdown_cells"] == 2
                 assert result["total_lines"] == 6  # Count all lines
                 assert result["has_outputs"] is False
+
+    @pytest.mark.asyncio
+    async def test_create_notebook_path_validation(self, mock_httpx_client):
+        """Test notebook name validation for security."""
+        # Test path traversal attempts
+        dangerous_names = [
+            "../evil",
+            "../../etc/passwd",
+            "/etc/passwd",
+            "C:\\Windows\\System32\\config",
+            "~/.ssh/id_rsa",
+            "notebook/../../../secret",
+        ]
+        
+        for name in dangerous_names:
+            result = await jupyter_kernel_mcp.create_notebook(name)
+            assert result.get("error") is True
+            assert "path traversal" in result["message"] or "absolute path" in result["message"]
+    
+    @pytest.mark.asyncio
+    async def test_create_notebook_reserved_names(self, mock_httpx_client):
+        """Test rejection of Windows reserved names."""
+        reserved_names = ["CON", "PRN", "AUX", "NUL", "COM1", "LPT1", "con.txt", "PRN.ipynb"]
+        
+        for name in reserved_names:
+            result = await jupyter_kernel_mcp.create_notebook(name)
+            assert result.get("error") is True
+            assert "reserved name" in result["message"]
+    
+    @pytest.mark.asyncio
+    async def test_create_notebook_invalid_characters(self, mock_httpx_client):
+        """Test rejection of invalid characters in notebook names."""
+        invalid_names = [
+            "notebook<script>",
+            "test|pipe",
+            "file:name",
+            "notebook?.ipynb",
+            "test*wild",
+            "note\x00book",
+        ]
+        
+        for name in invalid_names:
+            result = await jupyter_kernel_mcp.create_notebook(name)
+            assert result.get("error") is True
+            assert "can only contain" in result["message"]
+    
+    @pytest.mark.asyncio
+    async def test_create_notebook_valid_names(self, mock_httpx_client):
+        """Test acceptance of valid notebook names."""
+        valid_names = [
+            "my_notebook",
+            "test-123",
+            "Data Analysis 2024",
+            "ML_Experiment_v2",
+            "notebook",
+            "a" * 255,  # Max length
+        ]
+        
+        create_response = AsyncMock()
+        create_response.raise_for_status = AsyncMock()
+        create_response.json = AsyncMock(return_value={"name": "test.ipynb"})
+        mock_httpx_client.put.return_value = create_response
+        
+        with patch("httpx.AsyncClient", return_value=mock_httpx_client):
+            with patch.object(jupyter_kernel_mcp, 'JUPYTER_TOKEN', 'test-token'):
+                for name in valid_names:
+                    result = await jupyter_kernel_mcp.create_notebook(name)
+                    assert result.get("error") is not True
+    
+    @pytest.mark.asyncio
+    async def test_create_notebook_empty_name(self, mock_httpx_client):
+        """Test rejection of empty notebook names."""
+        empty_names = ["", "   ", "\t", "\n"]
+        
+        for name in empty_names:
+            result = await jupyter_kernel_mcp.create_notebook(name)
+            assert result.get("error") is True
+            assert "cannot be empty" in result["message"]
+    
+    @pytest.mark.asyncio
+    async def test_create_notebook_too_long(self, mock_httpx_client):
+        """Test rejection of overly long notebook names."""
+        long_name = "a" * 256  # One over the limit
+        
+        result = await jupyter_kernel_mcp.create_notebook(long_name)
+        assert result.get("error") is True
+        assert "too long" in result["message"]
+    
+    @pytest.mark.asyncio
+    async def test_delete_notebook_path_validation(self, mock_httpx_client):
+        """Test path validation in delete_notebook."""
+        dangerous_names = ["../evil", "/etc/passwd", "..\\..\\secret"]
+        
+        for name in dangerous_names:
+            result = await jupyter_kernel_mcp.delete_notebook(name)
+            assert result.get("error") is True
+            assert result.get("deleted") is False
+            assert "path traversal" in result["message"] or "absolute path" in result["message"]
+    
+    @pytest.mark.asyncio
+    async def test_rename_notebook_path_validation(self, mock_httpx_client):
+        """Test path validation in rename_notebook."""
+        # Test dangerous old names
+        result = await jupyter_kernel_mcp.rename_notebook("../evil", "safe")
+        assert result.get("error") is True
+        assert result.get("renamed") is False
+        
+        # Test dangerous new names
+        result = await jupyter_kernel_mcp.rename_notebook("safe", "/etc/passwd")
+        assert result.get("error") is True
+        assert result.get("renamed") is False
+        
+        # Test both dangerous
+        result = await jupyter_kernel_mcp.rename_notebook("../old", "../new")
+        assert result.get("error") is True
+        assert result.get("renamed") is False
