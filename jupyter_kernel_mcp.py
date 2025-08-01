@@ -62,10 +62,8 @@ class KernelStartupProgress:
             debug_print(f"❌ [{elapsed:.1f}s] {self.kernel_name}: Failed to start")
 
 
-# Create MCP server
 mcp = FastMCP("jupyter-kernel")
 
-# Configuration from environment variables
 CONFIG = {
     # Jupyter server configuration
     "JUPYTER_HOST": os.environ.get("JUPYTER_HOST", "localhost"),
@@ -74,13 +72,11 @@ CONFIG = {
     "JUPYTER_WS_PROTOCOL": os.environ.get("JUPYTER_WS_PROTOCOL", "ws"),
 }
 
-# Build Jupyter URLs from config
 JUPYTER_URL = (
     f"{CONFIG['JUPYTER_PROTOCOL']}://{CONFIG['JUPYTER_HOST']}:{CONFIG['JUPYTER_PORT']}"
 )
 JUPYTER_WS_URL = f"{CONFIG['JUPYTER_WS_PROTOCOL']}://{CONFIG['JUPYTER_HOST']}:{CONFIG['JUPYTER_PORT']}"
 
-# Get Jupyter token from environment
 JUPYTER_TOKEN = os.environ.get("JUPYTER_TOKEN")
 if not JUPYTER_TOKEN:
     debug_print(
@@ -148,15 +144,15 @@ def _get_kernel_spec_name(kernel_type: str) -> str:
         "python3": "python3",
         "deno": "deno",
         "julia": "julia-1.10",
-        "julia-1.10": "julia-1.10",  # Direct mapping
+        "julia-1.10": "julia-1.10",
         "r": "ir",
-        "ir": "ir",  # Direct mapping
+        "ir": "ir",
         "go": "gophernotes",
-        "gophernotes": "gophernotes",  # Direct mapping
+        "gophernotes": "gophernotes",
         "rust": "rust",
         "bash": "bash",
         "ruby": "ruby3",
-        "ruby3": "ruby3",  # Direct mapping
+        "ruby3": "ruby3",
     }
     return type_to_spec.get(kernel_type, "python3")
 
@@ -186,7 +182,6 @@ async def _ensure_kernel_ready(
     try:
         ws = await _connect_with_backoff(ws_endpoint, subprotocols=["kernel.v5.2"])
         async with ws:
-            # Send kernel_info_request
             msg_id = str(uuid.uuid4())
             kernel_info_msg = {
                 "header": {
@@ -205,7 +200,6 @@ async def _ensure_kernel_ready(
 
             await ws.send(json.dumps(kernel_info_msg))
 
-            # Wait for kernel_info_reply (with timeout)
             try:
                 start_time = asyncio.get_event_loop().time()
                 while (asyncio.get_event_loop().time() - start_time) < 5.0:
@@ -250,7 +244,6 @@ async def _connect_with_backoff(
             return await websockets.connect(ws_endpoint, subprotocols=subprotocols)
         except Exception as e:
             if attempt == max_retries - 1:
-                # Final attempt failed
                 raise Exception(
                     f"🔌 Connection troubles after {max_retries} attempts. The kernel might be taking a break. Error: {str(e)}"
                 )
@@ -258,13 +251,11 @@ async def _connect_with_backoff(
             # Calculate delay with exponential backoff
             delay = min(base_delay * (2**attempt), max_delay)
 
-            # Show encouraging message
             message = retry_messages[min(attempt, len(retry_messages) - 1)]
             debug_print(f"{message} (waiting {delay:.1f}s)")
 
             await asyncio.sleep(delay)
 
-    # Should never reach here, but just in case
     raise Exception("🔌 Unable to establish connection")
 
 
@@ -272,11 +263,9 @@ async def _execute_code(code: str, kernel: str = "python3") -> dict:
     """Internal function to execute code in a Jupyter kernel"""
     global KERNEL_IDS
 
-    # Map user-friendly kernel type to actual kernel spec name
     kernel_spec_name = _get_kernel_spec_name(kernel)
     debug_print(f"Mapping kernel '{kernel}' to spec name '{kernel_spec_name}'")
 
-    # Use configured Jupyter URLs
     jupyter_url = JUPYTER_URL
     ws_url = JUPYTER_WS_URL
 
@@ -284,14 +273,11 @@ async def _execute_code(code: str, kernel: str = "python3") -> dict:
     if JUPYTER_TOKEN:
         headers["Authorization"] = f"token {JUPYTER_TOKEN}"
 
-    # Check if we need to create a new kernel
     if kernel not in KERNEL_IDS:
-        # Create progress indicator
         progress = KernelStartupProgress(kernel)
         progress.add_step("Starting kernel creation", "🚀")
 
         async with httpx.AsyncClient() as client:
-            # Check if kernel is available before attempting to create
             progress.add_step("Checking available kernels", "🔍")
             kernels_data = await _get_available_kernels(jupyter_url, headers)
             available_kernels = list(kernels_data.get("kernelspecs", {}).keys())
@@ -304,7 +290,6 @@ async def _execute_code(code: str, kernel: str = "python3") -> dict:
                 progress.add_step("Attempting to create anyway", "🔧")
 
             try:
-                # Create kernel with specific kernel spec
                 kernel_data = {"name": kernel_spec_name}
                 progress.add_step(
                     f"Creating {kernel} kernel (spec: {kernel_spec_name})", "⚙️"
@@ -343,7 +328,6 @@ async def _execute_code(code: str, kernel: str = "python3") -> dict:
 
             progress.add_step(f"Kernel ID: {kernel_info['id'][:8]}...", "🆔")
 
-            # Add kernel initialization check for Deno and Rust
             if kernel in ["deno", "rust"]:
                 progress.add_step(f"Initializing {kernel} runtime environment", "🔄")
                 ready = await _ensure_kernel_ready(
@@ -354,7 +338,6 @@ async def _execute_code(code: str, kernel: str = "python3") -> dict:
                 )
                 if not ready:
                     progress.add_step("Kernel may not be fully ready", "⚠️")
-                # Give it a bit more time for runtime initialization
                 if kernel == "rust":
                     progress.add_step(
                         "Waiting for Rust compilation environment (2s)", "⏳"
@@ -392,14 +375,12 @@ async def _execute_code(code: str, kernel: str = "python3") -> dict:
             del KERNEL_IDS[kernel]
             return await _execute_code(code, kernel)
 
-    # Connect via WebSocket
     ws_endpoint = f"{ws_url}/api/kernels/{KERNEL_IDS[kernel]['id']}/channels"
     if JUPYTER_TOKEN:
         ws_endpoint += f"?token={JUPYTER_TOKEN}"
 
     websocket = await _connect_with_backoff(ws_endpoint, subprotocols=["kernel.v5.2"])
     async with websocket:
-        # Create execute_request message
         msg_id = str(uuid.uuid4())
         execute_msg = {
             "header": {
@@ -422,11 +403,9 @@ async def _execute_code(code: str, kernel: str = "python3") -> dict:
             "channel": "shell",
         }
 
-        # Send the execute request
         await websocket.send(json.dumps(execute_msg))
         debug_print(f"Sent execute_request for: {code}")
 
-        # Receive messages until we get execute_reply AND idle state
         output_text = []
         error_text = None
         reply_received = False
@@ -454,7 +433,6 @@ async def _execute_code(code: str, kernel: str = "python3") -> dict:
 
                 debug_print(f"Received: {msg_type} (parent: {parent_msg_id})")
 
-                # For status messages, check execution state
                 if msg_type == "status":
                     exec_state = msg_data.get("content", {}).get("execution_state", "")
                     debug_print(f"  Execution state: {exec_state}")
@@ -504,7 +482,6 @@ async def _execute_code(code: str, kernel: str = "python3") -> dict:
                             )
                         execution_state_idle = True
 
-                # Only process our messages for actual content
                 if parent_msg_id == msg_id:
                     if msg_type == "stream":
                         content = msg_data.get("content", {})
@@ -550,11 +527,9 @@ async def _execute_code(code: str, kernel: str = "python3") -> dict:
             debug_print(f"Error during message collection: {e}")
             error_text = str(e)
 
-    # Return error if we got one
     if error_text:
         return {"output": error_text, "error": True}
 
-    # Otherwise return normal output
     output = "".join(output_text)
     return {"output": output, "error": False}
 
@@ -623,7 +598,6 @@ async def compute(code: str, kernel: str = "python3", mode: str = "auto") -> dic
         "rb": "ruby",
     }
 
-    # Normalize kernel name
     actual_kernel = kernel_map.get(kernel, kernel)
 
     # Auto-detect if streaming would be beneficial
@@ -651,7 +625,6 @@ async def compute(code: str, kernel: str = "python3", mode: str = "auto") -> dic
         ]
         should_stream = any(pattern in code for pattern in streaming_patterns)
 
-    # Execute with appropriate method
     if should_stream:
         # Use the internal streaming execution logic directly
         # This avoids calling the external stream_execute tool
@@ -699,7 +672,6 @@ async def compute(code: str, kernel: str = "python3", mode: str = "auto") -> dic
                 "kernel": actual_kernel,
             }
 
-    # Use regular execute
     result = await _execute_code(code, actual_kernel)
 
     # Enhance output with helpful context
@@ -756,7 +728,6 @@ async def q(code: str, kernel: str = "python3") -> str:
         >>> q("[i**2 for i in range(5)]")
         "[0, 1, 4, 9, 16]"
     """
-    # Map friendly kernel names
     kernel_map = {
         "python": "python3",
         "py": "python3",
@@ -950,7 +921,6 @@ async def vars(kernel: str = "python3", detailed: bool = False) -> dict:
         - "Is my data still loaded?"
         - "What kernels have I been using?"
     """
-    # Map friendly kernel names
     kernel_map = {
         "python": "python3",
         "py": "python3",
@@ -1060,7 +1030,6 @@ end
     else:
         inspect_code = "echo 'Variable inspection not yet implemented for this kernel'"
 
-    # Execute the inspection code
     result = await _execute_code(inspect_code, actual_kernel)
 
     if result.get("error"):
@@ -1070,7 +1039,6 @@ end
             "error": True,
         }
 
-    # Format the output nicely
     output = result.get("output", "").strip()
 
     if output == "No variables defined yet":
@@ -1080,7 +1048,6 @@ end
             "variables": [],
         }
 
-    # Parse and format variables with emojis
     formatted_vars = [f"🧠 {actual_kernel} kernel state:"]
     for line in output.split("\n"):
         if line.strip():
@@ -4134,13 +4101,11 @@ async def stream_execute(code: str, kernel: str = "python3") -> dict:
     """
     global KERNEL_IDS
 
-    # Map user-friendly kernel type to actual kernel spec name
     kernel_spec_name = _get_kernel_spec_name(kernel)
     debug_print(
         f"Stream execute: Mapping kernel '{kernel}' to spec name '{kernel_spec_name}'"
     )
 
-    # Use configured Jupyter URLs
     jupyter_url = JUPYTER_URL
     ws_url = JUPYTER_WS_URL
 
@@ -4148,7 +4113,6 @@ async def stream_execute(code: str, kernel: str = "python3") -> dict:
     if JUPYTER_TOKEN:
         headers["Authorization"] = f"token {JUPYTER_TOKEN}"
 
-    # Check if we need to create a new kernel
     if kernel not in KERNEL_IDS:
         async with httpx.AsyncClient() as client:
             # Check if kernel is available before attempting to create
@@ -4162,7 +4126,6 @@ async def stream_execute(code: str, kernel: str = "python3") -> dict:
                 debug_print("Attempting to create anyway...")
 
             try:
-                # Create kernel with specific kernel spec
                 kernel_data = {"name": kernel_spec_name}
                 debug_print(
                     f"Attempting to create {kernel} kernel (spec: {kernel_spec_name})..."
@@ -4200,7 +4163,6 @@ async def stream_execute(code: str, kernel: str = "python3") -> dict:
                 f"Created {kernel} kernel: {KERNEL_IDS[kernel]['id']} with session: {KERNEL_IDS[kernel]['session'][:8]}..."
             )
 
-            # Add kernel initialization check for Deno and Rust
             if kernel in ["deno", "rust"]:
                 debug_print(f"Waiting for {kernel} kernel to initialize...")
                 ready = await _ensure_kernel_ready(
@@ -4211,7 +4173,6 @@ async def stream_execute(code: str, kernel: str = "python3") -> dict:
                 )
                 if not ready:
                     debug_print(f"Warning: {kernel} kernel may not be fully ready")
-                # Give it a bit more time for runtime initialization
                 if kernel == "rust":
                     await asyncio.sleep(
                         2.0
@@ -4243,7 +4204,6 @@ async def stream_execute(code: str, kernel: str = "python3") -> dict:
             del KERNEL_IDS[kernel]
             return await stream_execute(code, kernel)
 
-    # Connect via WebSocket
     ws_endpoint = f"{ws_url}/api/kernels/{KERNEL_IDS[kernel]['id']}/channels"
     if JUPYTER_TOKEN:
         ws_endpoint += f"?token={JUPYTER_TOKEN}"
@@ -4254,7 +4214,6 @@ async def stream_execute(code: str, kernel: str = "python3") -> dict:
 
     websocket = await _connect_with_backoff(ws_endpoint, subprotocols=["kernel.v5.2"])
     async with websocket:
-        # Create execute_request message
         msg_id = str(uuid.uuid4())
         execute_msg = {
             "header": {
@@ -4277,7 +4236,6 @@ async def stream_execute(code: str, kernel: str = "python3") -> dict:
             "channel": "shell",
         }
 
-        # Send the execute request
         await websocket.send(json.dumps(execute_msg))
         debug_print("Sent execute_request for streaming execution")
 
