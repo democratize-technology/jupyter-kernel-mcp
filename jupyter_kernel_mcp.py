@@ -32,9 +32,13 @@ import sys
 from datetime import datetime
 
 
+# Debug mode - set via environment variable
+DEBUG = os.environ.get("JUPYTER_MCP_DEBUG", "").lower() == "true"
+
 # Helper function to print debug messages to stderr
 def debug_print(*args, **kwargs):
-    print(*args, **kwargs, file=sys.stderr)
+    if DEBUG:
+        print(*args, **kwargs, file=sys.stderr)
 
 
 # Progress indicator for kernel startup
@@ -83,11 +87,13 @@ if not JUPYTER_TOKEN:
         "WARNING: No JUPYTER_TOKEN found in environment. Authentication will fail."
     )
 else:
-    debug_print(f"Got Jupyter token: {JUPYTER_TOKEN[:8]}...")
+    debug_print("Jupyter token loaded from environment")
 
 # Global dictionary to store kernel IDs and session IDs by kernel type
 # Structure: {kernel_type: {"id": kernel_id, "session": session_id}}
 KERNEL_IDS = {}
+# Lock to protect concurrent access to KERNEL_IDS
+KERNEL_IDS_LOCK = asyncio.Lock()
 
 
 def _get_kernel_spec(kernel_type: str) -> dict:
@@ -106,7 +112,7 @@ def _get_kernel_spec(kernel_type: str) -> dict:
         },
         "r": {"name": "ir", "display_name": "R", "language": "r"},
         "go": {"name": "gophernotes", "display_name": "Go", "language": "go"},
-        "rust": {"name": "rust", "display_name": "Rust", "language": "rust"},
+        "rust": {"name": "evcxr_jupyter", "display_name": "Rust", "language": "rust"},
         "bash": {"name": "bash", "display_name": "Bash", "language": "bash"},
         "ruby": {"name": "ruby3", "display_name": "Ruby 3", "language": "ruby"},
     }
@@ -131,7 +137,7 @@ def _get_kernel_type_from_spec(kernel_spec_name: str) -> str:
         "julia-1.10": "julia",
         "ir": "r",
         "gophernotes": "go",
-        "rust": "rust",
+        "evcxr_jupyter": "rust",
         "bash": "bash",
         "ruby3": "ruby",
     }
@@ -149,7 +155,8 @@ def _get_kernel_spec_name(kernel_type: str) -> str:
         "ir": "ir",
         "go": "gophernotes",
         "gophernotes": "gophernotes",
-        "rust": "rust",
+        "rust": "evcxr_jupyter",
+        "evcxr_jupyter": "evcxr_jupyter",
         "bash": "bash",
         "ruby": "ruby3",
         "ruby3": "ruby3",
@@ -273,7 +280,11 @@ async def _execute_code(code: str, kernel: str = "python3") -> dict:
     if JUPYTER_TOKEN:
         headers["Authorization"] = f"token {JUPYTER_TOKEN}"
 
-    if kernel not in KERNEL_IDS:
+    # Check if kernel exists with lock
+    async with KERNEL_IDS_LOCK:
+        kernel_exists = kernel in KERNEL_IDS
+    
+    if not kernel_exists:
         progress = KernelStartupProgress(kernel)
         progress.add_step("Starting kernel creation", "🚀")
 
@@ -324,7 +335,8 @@ async def _execute_code(code: str, kernel: str = "python3") -> dict:
 
             kernel_info = response.json()
             kernel_session = str(uuid.uuid4())
-            KERNEL_IDS[kernel] = {"id": kernel_info["id"], "session": kernel_session}
+            async with KERNEL_IDS_LOCK:
+                KERNEL_IDS[kernel] = {"id": kernel_info["id"], "session": kernel_session}
 
             progress.add_step(f"Kernel ID: {kernel_info['id'][:8]}...", "🆔")
 
@@ -350,32 +362,46 @@ async def _execute_code(code: str, kernel: str = "python3") -> dict:
                     await asyncio.sleep(1.0)
 
             progress.complete(success=True)
+            
+            # Set kernel_id and session for the newly created kernel
+            async with KERNEL_IDS_LOCK:
+                kernel_id = KERNEL_IDS[kernel]['id']
+                kernel_session = KERNEL_IDS[kernel]['session']
     else:
-        debug_print(f"Using existing {kernel} kernel: {KERNEL_IDS[kernel]['id']}")
+        async with KERNEL_IDS_LOCK:
+            kernel_id = KERNEL_IDS[kernel]['id']
+        debug_print(f"Using existing {kernel} kernel: {kernel_id}")
 
         # Verify the kernel still exists before trying to connect
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(
-                    f"{jupyter_url}/api/kernels/{KERNEL_IDS[kernel]['id']}",
+                    f"{jupyter_url}/api/kernels/{kernel_id}",
                     headers=headers,
                 )
                 if response.status_code == 404:
                     debug_print(
-                        f"Kernel {KERNEL_IDS[kernel]['id']} no longer exists, removing from cache"
+                        f"Kernel {kernel_id} no longer exists, removing from cache"
                     )
-                    del KERNEL_IDS[kernel]
+                    async with KERNEL_IDS_LOCK:
+                        del KERNEL_IDS[kernel]
                     # Recursively call to create a new kernel
                     return await _execute_code(code, kernel)
                 response.raise_for_status()
-                debug_print(f"Confirmed kernel {KERNEL_IDS[kernel]['id']} still exists")
+                debug_print(f"Confirmed kernel {kernel_id} still exists")
         except Exception as e:
             debug_print(f"Error checking kernel existence: {e}")
             debug_print("Removing cached kernel and creating new one")
-            del KERNEL_IDS[kernel]
+            async with KERNEL_IDS_LOCK:
+                del KERNEL_IDS[kernel]
             return await _execute_code(code, kernel)
 
-    ws_endpoint = f"{ws_url}/api/kernels/{KERNEL_IDS[kernel]['id']}/channels"
+    # Get kernel info with lock
+    async with KERNEL_IDS_LOCK:
+        kernel_id = KERNEL_IDS[kernel]['id']
+        kernel_session = KERNEL_IDS[kernel]['session']
+    
+    ws_endpoint = f"{ws_url}/api/kernels/{kernel_id}/channels"
     if JUPYTER_TOKEN:
         ws_endpoint += f"?token={JUPYTER_TOKEN}"
 
@@ -386,7 +412,7 @@ async def _execute_code(code: str, kernel: str = "python3") -> dict:
             "header": {
                 "msg_id": msg_id,
                 "msg_type": "execute_request",
-                "session": KERNEL_IDS[kernel]["session"],
+                "session": kernel_session,
                 "username": "mcp",
                 "version": "5.2",
                 "date": datetime.utcnow().isoformat() + "Z",
@@ -1938,7 +1964,8 @@ async def reset(kernel: str = None) -> dict:
                 response.raise_for_status()
                 debug_print(f"Deleted {kernel_name} kernel: {kernel_id}")
                 deleted_kernels.append(kernel_name)
-                del KERNEL_IDS[kernel_name]
+                async with KERNEL_IDS_LOCK:
+                    del KERNEL_IDS[kernel_name]
             except Exception as e:
                 debug_print(f"Failed to delete {kernel_name} kernel: {e}")
 
@@ -4157,7 +4184,8 @@ async def stream_execute(code: str, kernel: str = "python3") -> dict:
 
             kernel_info = response.json()
             kernel_session = str(uuid.uuid4())
-            KERNEL_IDS[kernel] = {"id": kernel_info["id"], "session": kernel_session}
+            async with KERNEL_IDS_LOCK:
+                KERNEL_IDS[kernel] = {"id": kernel_info["id"], "session": kernel_session}
 
             debug_print(
                 f"Created {kernel} kernel: {KERNEL_IDS[kernel]['id']} with session: {KERNEL_IDS[kernel]['session'][:8]}..."
@@ -4179,32 +4207,46 @@ async def stream_execute(code: str, kernel: str = "python3") -> dict:
                     )  # Rust needs more time for compilation environment
                 else:
                     await asyncio.sleep(1.0)
+            
+            # Set kernel_id and session for the newly created kernel
+            async with KERNEL_IDS_LOCK:
+                kernel_id = KERNEL_IDS[kernel]['id']
+                kernel_session = KERNEL_IDS[kernel]['session']
     else:
-        debug_print(f"Using existing {kernel} kernel: {KERNEL_IDS[kernel]['id']}")
+        async with KERNEL_IDS_LOCK:
+            kernel_id = KERNEL_IDS[kernel]['id']
+        debug_print(f"Using existing {kernel} kernel: {kernel_id}")
 
         # Verify the kernel still exists before trying to connect
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(
-                    f"{jupyter_url}/api/kernels/{KERNEL_IDS[kernel]['id']}",
+                    f"{jupyter_url}/api/kernels/{kernel_id}",
                     headers=headers,
                 )
                 if response.status_code == 404:
                     debug_print(
-                        f"Kernel {KERNEL_IDS[kernel]['id']} no longer exists, removing from cache"
+                        f"Kernel {kernel_id} no longer exists, removing from cache"
                     )
-                    del KERNEL_IDS[kernel]
+                    async with KERNEL_IDS_LOCK:
+                        del KERNEL_IDS[kernel]
                     # Recursively call to create a new kernel
                     return await stream_execute(code, kernel)
                 response.raise_for_status()
-                debug_print(f"Confirmed kernel {KERNEL_IDS[kernel]['id']} still exists")
+                debug_print(f"Confirmed kernel {kernel_id} still exists")
         except Exception as e:
             debug_print(f"Error checking kernel existence: {e}")
             debug_print("Removing cached kernel and creating new one")
-            del KERNEL_IDS[kernel]
+            async with KERNEL_IDS_LOCK:
+                del KERNEL_IDS[kernel]
             return await stream_execute(code, kernel)
 
-    ws_endpoint = f"{ws_url}/api/kernels/{KERNEL_IDS[kernel]['id']}/channels"
+    # Get kernel info with lock
+    async with KERNEL_IDS_LOCK:
+        kernel_id = KERNEL_IDS[kernel]['id']
+        kernel_session = KERNEL_IDS[kernel]['session']
+    
+    ws_endpoint = f"{ws_url}/api/kernels/{kernel_id}/channels"
     if JUPYTER_TOKEN:
         ws_endpoint += f"?token={JUPYTER_TOKEN}"
 
@@ -4219,7 +4261,7 @@ async def stream_execute(code: str, kernel: str = "python3") -> dict:
             "header": {
                 "msg_id": msg_id,
                 "msg_type": "execute_request",
-                "session": KERNEL_IDS[kernel]["session"],
+                "session": kernel_session,
                 "username": "mcp",
                 "version": "5.2",
                 "date": datetime.utcnow().isoformat() + "Z",
