@@ -1,140 +1,58 @@
 # Jupyter Kernel MCP Tests
 
-Comprehensive test suite for the Jupyter Kernel MCP server with 100% code coverage target.
+Test suite for internal utility functions and helpers in the Jupyter Kernel MCP server.
 
 ## Test Structure
 
 ```
 tests/
-├── conftest.py              # Shared fixtures and test configuration
-├── test_websocket_connection.py    # WebSocket connection and retry logic tests
-├── test_kernel_management.py       # Kernel creation and management tests
-├── test_mcp_tools.py              # MCP tool functions tests
-├── test_notebook_operations.py     # Notebook CRUD operations tests
-└── test_utilities.py              # Utility functions and edge cases
+├── conftest.py                     # Shared fixtures and test configuration
+├── test_kernel_management.py       # Tests for kernel spec utilities and HTTP functions
+├── test_utilities.py              # Tests for debug utilities and kernel mappings
+└── test_websocket_connection.py   # Tests for WebSocket retry logic and connection handling
 ```
 
 ## Running Tests
 
-### Quick Run
 ```bash
-./run_tests.sh
-```
-
-### Manual Run
-```bash
-# Install test dependencies
-uv pip install -e ".[test]"
-
-# Run all tests with coverage
-uv run pytest -v --cov=jupyter_kernel_mcp --cov-report=term-missing
+# Run all tests
+uv run pytest -v
 
 # Run specific test file
-uv run pytest tests/test_websocket_connection.py -v
+uv run pytest tests/test_kernel_management.py -v
 
-# Run with specific markers
-uv run pytest -m "not slow" -v
+# Run with coverage
+uv run pytest -v --cov=jupyter_kernel_mcp --cov-report=term-missing
 ```
 
-## Coverage Reports
+## Test Scope
 
-- **Terminal**: Shows missing lines directly in terminal output
-- **HTML**: Open `htmlcov/index.html` for interactive coverage report
-- **JSON**: `coverage.json` for programmatic access
+**NOTE**: Due to FastMCP's tool decoration, tests are limited to internal utility functions that don't depend on MCP tools. The following are tested:
 
-## Test Categories
+### Kernel Management
+- `_get_kernel_spec()` - Kernel specification retrieval
+- `_get_kernel_type_from_spec()` - Kernel type mapping
+- `_get_kernel_spec_name()` - Kernel name resolution
+- `_get_available_kernels()` - HTTP client for kernel listing
+- Kernel locking mechanisms
 
-### 1. WebSocket Connection Tests
-- Connection retry with exponential backoff
-- Authentication header handling
-- Kernel readiness checks
-- Connection failure scenarios
+### Utilities
+- `debug_print()` - Debug output handling
+- Kernel type mappings and aliases
 
-### 2. Kernel Management Tests
-- Kernel creation and caching
-- Kernel state persistence with locking
-- Kernel recreation on failure
-- Multi-kernel type support
+### WebSocket Connection
+- `_connect_with_backoff()` - Connection retry with exponential backoff
+- `_ensure_kernel_ready()` - Kernel readiness checks
+- Exception handling in connection logic
 
-### 3. MCP Tool Tests
-- Code execution (compute, execute, q)
-- Variable inspection (vars, workspace)
-- Kernel state management (reset, kernel_state)
-- AI assistance (suggest_next)
-- Streaming execution for long-running tasks
+## Coverage
 
-### 4. Notebook Operations Tests
-- Create, read, update, delete notebooks
-- Cell execution and management
-- Markdown cell support
-- Notebook search and statistics
-- Batch operations (run all cells, clear outputs)
+Current test coverage focuses on utility functions and internal helpers. MCP tool functions (decorated with `@mcp.tool()`) cannot be tested directly due to FastMCP's function wrapping.
 
-### 5. Utility Tests
-- Debug printing
-- Progress indicators
-- Environment variable handling
-- Edge cases and error conditions
+## Adding Tests
 
-## Key Testing Patterns
-
-### Mocking WebSockets
-```python
-mock_websocket = AsyncMock()
-mock_websocket.send = AsyncMock()
-mock_websocket.recv = AsyncMock()
-mock_websocket.__aenter__ = AsyncMock(return_value=mock_websocket)
-mock_websocket.__aexit__ = AsyncMock()
-```
-
-### Mocking HTTP Clients
-```python
-mock_httpx_client = AsyncMock()
-mock_response = AsyncMock()
-mock_response.json = AsyncMock(return_value={"data": "value"})
-mock_httpx_client.get.return_value = mock_response
-```
-
-### Testing Async Functions
-```python
-@pytest.mark.asyncio
-async def test_async_function():
-    result = await function_under_test()
-    assert result == expected
-```
-
-## Coverage Goals
-
-- **Target**: 100% code coverage
-- **Current**: Run `./run_tests.sh` to see current coverage
-- **Excluded**: Only truly unreachable code (e.g., `if __name__ == "__main__"` in imports)
-
-## Adding New Tests
-
-1. Identify untested code paths using coverage report
-2. Add test cases to appropriate test file
-3. Use existing fixtures from `conftest.py`
-4. Follow naming convention: `test_<feature>_<scenario>`
-5. Ensure async tests use `@pytest.mark.asyncio`
-6. Mock external dependencies (WebSocket, HTTP, etc.)
-
-## Continuous Integration
-
-Tests are configured to:
-- Fail if coverage drops below 100%
-- Generate coverage reports in multiple formats
-- Run in parallel for faster execution
-- Timeout long-running tests
-
-## Debugging Tests
-
-```bash
-# Run with debugging output
-uv run pytest -v -s
-
-# Run specific test with pdb
-uv run pytest -k "test_name" --pdb
-
-# Show test durations
-uv run pytest --durations=10
-```
+When adding new internal utility functions:
+1. Add tests to the appropriate test file
+2. Use existing fixtures from `conftest.py`
+3. Mock external dependencies (WebSocket, HTTP)
+4. Follow existing test patterns
