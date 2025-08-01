@@ -2,3 +2,8 @@ __pycache__
 .env
 .claude
 .venv
+.coverage
+coverage.json
+htmlcov/
+*.egg-info/
+.pytest_cache/
